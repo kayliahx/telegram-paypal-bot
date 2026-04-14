@@ -1,17 +1,10 @@
-import { Telegraf } from 'telegraf';
+const TelegramBot = require('node-telegram-bot-api');
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 
-// Start command
-bot.start((ctx) => {
-  ctx.reply('Bot is online 🚀');
+console.log("Bot started...");
+
+bot.on('message', (msg) => {
+  console.log("Message received:", msg.text);
+  bot.sendMessage(msg.chat.id, "✅ Bot is working!");
 });
-
-// Simple test command
-bot.command('ping', (ctx) => {
-  ctx.reply('pong ✅');
-});
-
-bot.launch();
-
-console.log('Bot started');
