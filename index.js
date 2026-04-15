@@ -11,6 +11,11 @@ const app = express();
 
 app.use(express.json());
 
+// ===== KEEP ALIVE ROUTE =====
+app.get("/", (req, res) => {
+  res.send("Bot is running ✅");
+});
+
 // ===== WEBHOOK =====
 const WEBHOOK_URL = process.env.RAILWAY_STATIC_URL;
 
@@ -66,6 +71,9 @@ bot.on('message', async (msg) => {
   if (text === '/access') {
     const expiresAt = usersPaid.get(msg.from.id);
 
+    console.log("📥 Access request from:", msg.from.id);
+    console.log("📦 Current usersPaid:", usersPaid);
+
     if (!expiresAt) {
       return bot.sendMessage(chatId, "❌ You must purchase first.\nUse /buy");
     }
@@ -107,7 +115,7 @@ bot.on('message', async (msg) => {
     return bot.sendMessage(chatId, "Admin command works ✅");
   }
 
-  // ===== APPROVE (5 MIN TEST) =====
+  // ===== APPROVE =====
   if (text.startsWith('/approve')) {
     const userId = Number(text.split(' ')[1]);
 
@@ -119,17 +127,26 @@ bot.on('message', async (msg) => {
 
     usersPaid.set(userId, expiresAt);
 
-    console.log("✅ Approved:", userId, "until", new Date(expiresAt));
+    console.log("✅ Approved:", userId, "until", new Date(expiresAt).toISOString());
 
     return bot.sendMessage(chatId, `👑 User ${userId} approved for 5 minutes`);
   }
 });
 
-// ===== AUTO REMOVE (STRONG VERSION) =====
+// ===== KEEP ALIVE LOG =====
+setInterval(() => {
+  console.log("⏱ Bot alive:", new Date().toISOString());
+}, 60 * 1000);
+
+// ===== AUTO REMOVE LOOP =====
 setInterval(async () => {
   const now = Date.now();
 
+  console.log("🔁 Checking users...", new Date().toISOString());
+
   for (const [userId, expiresAt] of usersPaid.entries()) {
+
+    console.log("👀 Checking:", userId, "expires at", new Date(expiresAt).toISOString());
 
     if (userId === ADMIN_ID) continue;
 
@@ -137,21 +154,19 @@ setInterval(async () => {
       console.log("⏳ Expired user:", userId);
 
       try {
-        // Step 1: Kick
         await bot.banChatMember(CHANNEL_ID, userId);
         console.log("🚫 Banned:", userId);
 
-        // Step 2: Immediately unban (so they can rejoin later)
         await bot.unbanChatMember(CHANNEL_ID, userId);
         console.log("♻️ Unbanned:", userId);
 
         usersPaid.delete(userId);
 
-        console.log("❌ Removed expired user:", userId);
+        console.log("❌ Removed user from system:", userId);
 
       } catch (err) {
         console.log("❌ Remove error:", userId, err.message);
       }
     }
   }
-}, 30 * 1000); // runs every 30 seconds
+}, 30 * 1000);
