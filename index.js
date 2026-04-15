@@ -11,7 +11,7 @@ if (!token) {
 }
 
 // ✅ ADD YOUR ADMIN ID HERE
-const ADMIN_ID = 145044793 ;
+const ADMIN_ID =145044793;
 
 // ✅ ADD YOUR PAYPAL LINK HERE
 const PAYPAL_LINK = "https://www.paypal.com/ncp/payment/GTK5FEXNGNBDU";
