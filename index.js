@@ -3,7 +3,7 @@ const express = require('express');
 
 const TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
-const CHANNEL_ID = process.env.CHANNEL_ID; // "-100xxxxxxxxxx"
+const CHANNEL_ID = Number(process.env.CHANNEL_ID);
 const PAYPAL_LINK = process.env.PAYPAL_LINK;
 
 const bot = new TelegramBot(TOKEN);
@@ -11,7 +11,7 @@ const app = express();
 
 app.use(express.json());
 
-// 🔥 Webhook setup
+// ===== WEBHOOK SETUP =====
 const WEBHOOK_URL = process.env.RAILWAY_STATIC_URL;
 
 if (WEBHOOK_URL) {
@@ -19,32 +19,34 @@ if (WEBHOOK_URL) {
   console.log("✅ WEBHOOK SET");
 }
 
-// 📩 Telegram webhook endpoint
+// ===== TELEGRAM ENDPOINT =====
 app.post(`/bot${TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
-// 🚀 Start server
+// ===== SERVER =====
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
 
-// 💾 Temporary storage (later we can replace with database)
-const usersPaid = new Set();
+// ===== STORAGE =====
+const usersPaid = new Map(); // userId -> expiration timestamp
 
-// 📩 Message handler
+// ===== BOT LOGIC =====
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
 
-  // 👋 Start
+  if (!text) return;
+
+  // ===== START =====
   if (text === '/start') {
     return bot.sendMessage(chatId, "👋 Welcome!\nUse /buy to get access.");
   }
 
-  // 💳 Buy button
+  // ===== BUY =====
   if (text === '/buy') {
     return bot.sendMessage(chatId, "💳 Click below to purchase:", {
       reply_markup: {
@@ -55,15 +57,22 @@ bot.on('message', async (msg) => {
     });
   }
 
-  // 🆔 Get user ID
+  // ===== GET ID =====
   if (text === '/id') {
     return bot.sendMessage(chatId, `Your ID: ${msg.from.id}`);
   }
 
-  // 🔓 Access (SECURE LINK)
+  // ===== ACCESS =====
   if (text === '/access') {
-    if (!usersPaid.has(msg.from.id)) {
+    const expiresAt = usersPaid.get(msg.from.id);
+
+    if (!expiresAt) {
       return bot.sendMessage(chatId, "❌ You must purchase first.\nUse /buy");
+    }
+
+    if (Date.now() > expiresAt) {
+      usersPaid.delete(msg.from.id);
+      return bot.sendMessage(chatId, "⏳ Your access has expired.");
     }
 
     try {
@@ -85,15 +94,15 @@ bot.on('message', async (msg) => {
     }
   }
 
-  // 🔐 ADMIN ONLY
+  // ===== ADMIN ONLY =====
   if (msg.from.id !== ADMIN_ID) return;
 
-  // 🧪 Test command
+  // ===== TEST =====
   if (text === '/test') {
     return bot.sendMessage(chatId, "Admin command works ✅");
   }
 
-  // ✅ Approve user
+  // ===== APPROVE (5 MINUTES TEST) =====
   if (text.startsWith('/approve')) {
     const userId = Number(text.split(' ')[1]);
 
@@ -101,8 +110,31 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, "❌ Invalid ID");
     }
 
-    usersPaid.add(userId);
+    // ⏱️ 5 MINUTES TEST MODE
+    const expiresAt = Date.now() + 5 * 60 * 1000;
 
-    return bot.sendMessage(chatId, `👑 Admin approved user ${userId}`);
+    usersPaid.set(userId, expiresAt);
+
+    return bot.sendMessage(chatId, `👑 User ${userId} approved for 5 minutes`);
   }
 });
+
+// ===== AUTO REMOVE SYSTEM =====
+setInterval(async () => {
+  const now = Date.now();
+
+  for (const [userId, expiresAt] of usersPaid.entries()) {
+    if (now > expiresAt) {
+      try {
+        await bot.banChatMember(CHANNEL_ID, userId);
+        await bot.unbanChatMember(CHANNEL_ID, userId);
+
+        usersPaid.delete(userId);
+
+        console.log(`❌ Removed expired user ${userId}`);
+      } catch (err) {
+        console.log(`Error removing user ${userId}`, err.message);
+      }
+    }
+  }
+}, 60 * 1000); // every minute
