@@ -77,8 +77,11 @@ bot.on('message', async (msg) => {
 
     try {
       const invite = await bot.createChatInviteLink(CHANNEL_ID, {
-        member_limit: 10
+        member_limit: 1
       });
+
+      // 🔥 DEBUG LINE
+      console.log("Invite link created:", invite.invite_link);
 
       return bot.sendMessage(chatId, "🔥 Click below to join your private channel:", {
         reply_markup: {
@@ -94,7 +97,7 @@ bot.on('message', async (msg) => {
     }
   }
 
-  // ===== ADMIN ONLY (WITH DEBUG) =====
+  // ===== ADMIN ONLY =====
   if (msg.from.id !== ADMIN_ID) {
     console.log("❌ Not admin:", msg.from.id);
     return;
@@ -127,7 +130,6 @@ setInterval(async () => {
 
   for (const [userId, expiresAt] of usersPaid.entries()) {
 
-    // 🚫 Skip admin (fix log spam)
     if (userId === ADMIN_ID) continue;
 
     if (now > expiresAt) {
