@@ -77,7 +77,7 @@ bot.on('message', async (msg) => {
 
     try {
       const invite = await bot.createChatInviteLink(CHANNEL_ID, {
-        member_limit: 1
+        member_limit: 10
       });
 
       return bot.sendMessage(chatId, "🔥 Click below to join your private channel:", {
