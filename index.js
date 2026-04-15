@@ -11,7 +11,7 @@ const app = express();
 
 app.use(express.json());
 
-// ===== KEEP ALIVE ROUTE =====
+// ===== KEEP ALIVE =====
 app.get("/", (req, res) => {
   res.send("Bot is running ✅");
 });
@@ -69,17 +69,19 @@ bot.on('message', async (msg) => {
 
   // ===== ACCESS =====
   if (text === '/access') {
-    const expiresAt = usersPaid.get(msg.from.id);
 
-    console.log("📥 Access request from:", msg.from.id);
-    console.log("📦 Current usersPaid:", usersPaid);
+    const userId = msg.from.id;
+    const expiresAt = usersPaid.get(userId);
+
+    console.log("📥 Access request from:", userId);
+    console.log("📦 Stored users:", usersPaid);
 
     if (!expiresAt) {
       return bot.sendMessage(chatId, "❌ You must purchase first.\nUse /buy");
     }
 
-    if (Date.now() > expiresAt) {
-      usersPaid.delete(msg.from.id);
+    if (Date.now() - expiresAt > 0) {
+      usersPaid.delete(userId);
       return bot.sendMessage(chatId, "⏳ Your access has expired.");
     }
 
@@ -88,9 +90,9 @@ bot.on('message', async (msg) => {
         member_limit: 1
       });
 
-      console.log("🔗 Invite created for:", msg.from.id, invite.invite_link);
+      console.log("🔗 Invite created:", invite.invite_link);
 
-      return bot.sendMessage(chatId, "🔥 Click below to join your private channel:", {
+      return bot.sendMessage(chatId, "🔥 Click below to join:", {
         reply_markup: {
           inline_keyboard: [
             [{ text: "🚀 Join Channel", url: invite.invite_link }]
@@ -100,7 +102,7 @@ bot.on('message', async (msg) => {
 
     } catch (err) {
       console.log("❌ Invite error:", err.message);
-      return bot.sendMessage(chatId, "❌ Error generating access link");
+      return bot.sendMessage(chatId, "❌ Error generating link");
     }
   }
 
@@ -117,13 +119,18 @@ bot.on('message', async (msg) => {
 
   // ===== APPROVE =====
   if (text.startsWith('/approve')) {
-    const userId = Number(text.split(' ')[1]);
 
-    if (!userId) {
-      return bot.sendMessage(chatId, "❌ Invalid ID");
+    const rawId = text.split(' ')[1];
+
+    // ✅ STRICT VALIDATION
+    if (!rawId || !/^\d+$/.test(rawId)) {
+      return bot.sendMessage(chatId, "❌ Invalid ID format");
     }
 
-    const expiresAt = Date.now() + 5 * 60 * 1000;
+    const userId = Number(rawId);
+
+    // ⏱ 5 minutes (test mode)
+    const expiresAt = Date.now() + (5 * 60 * 1000);
 
     usersPaid.set(userId, expiresAt);
 
@@ -138,25 +145,27 @@ setInterval(() => {
   console.log("⏱ Bot alive:", new Date().toISOString());
 }, 60 * 1000);
 
-// ===== AUTO REMOVE LOOP =====
+// ===== AUTO REMOVE SYSTEM =====
 setInterval(async () => {
+
   const now = Date.now();
 
   console.log("🔁 Checking users...", new Date().toISOString());
 
   for (const [userId, expiresAt] of usersPaid.entries()) {
 
-    console.log("👀 Checking:", userId, "expires at", new Date(expiresAt).toISOString());
+    console.log("👀 Checking:", userId);
     console.log("⏱ NOW:", now);
     console.log("⏱ EXPIRES:", expiresAt);
     console.log("⏱ DIFF:", now - expiresAt);
 
+    // ⚠️ skip admin
     if (userId === ADMIN_ID) continue;
 
     // ✅ FIXED CONDITION
     if (now - expiresAt > 0) {
 
-      console.log("⏳ Expired user:", userId);
+      console.log("⏳ Expired:", userId);
 
       try {
         await bot.banChatMember(CHANNEL_ID, userId);
@@ -167,11 +176,12 @@ setInterval(async () => {
 
         usersPaid.delete(userId);
 
-        console.log("❌ Removed user from system:", userId);
+        console.log("❌ Removed from system:", userId);
 
       } catch (err) {
         console.log("❌ Remove error:", userId, err.message);
       }
     }
   }
+
 }, 30 * 1000);
