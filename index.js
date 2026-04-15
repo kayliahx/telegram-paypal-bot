@@ -84,9 +84,15 @@ bot.on('message', (msg) => {
         bot.sendMessage(chatId, "Admin command works ✅");
     }
 
-    if (text.startsWith('/approve')) {
-        const userId = text.split(' ')[1];
-        usersPaid.add(Number(userId));
-        bot.sendMessage(chatId, `✅ User ${userId} approved`);
+if (text.startsWith('/approve')) {
+    const userId = Number(text.split(' ')[1]);
+
+    if (!userId) {
+        return bot.sendMessage(chatId, "❌ Invalid ID");
+    }
+
+    usersPaid.add(userId);
+    return bot.sendMessage(chatId, `✅ User ${userId} approved`);
+}
     }
 });
