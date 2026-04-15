@@ -11,7 +11,8 @@ if (!token) {
 
 console.log("🚀 Bot is launching...");
 
-const bot = new TelegramBot(token, { polling: true });
+// 👇 CHANGE IS HERE
+const bot = new TelegramBot(token, { polling: false });
 
 bot.on('message', (msg) => {
   console.log("📩 Received:", msg.text);
