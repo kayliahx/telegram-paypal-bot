@@ -94,8 +94,11 @@ bot.on('message', async (msg) => {
     }
   }
 
-  // ===== ADMIN ONLY =====
-  if (msg.from.id !== ADMIN_ID) return;
+  // ===== ADMIN ONLY (WITH DEBUG) =====
+  if (msg.from.id !== ADMIN_ID) {
+    console.log("❌ Not admin:", msg.from.id);
+    return;
+  }
 
   // ===== TEST =====
   if (text === '/test') {
@@ -116,15 +119,6 @@ bot.on('message', async (msg) => {
 
     return bot.sendMessage(chatId, `👑 User ${userId} approved for 5 minutes`);
   }
-
-  // ===== OPTIONAL: QUICK TEST FOR SECOND ACCOUNT =====
-  // 👉 Replace SECOND_ACCOUNT_ID with your second Telegram ID if you want auto approval
-  /*
-  if (msg.from.id === 629653870) {
-    const expiresAt = Date.now() + 5 * 60 * 1000;
-    usersPaid.set(msg.from.id, expiresAt);
-  }
-  */
 });
 
 // ===== AUTO REMOVE =====
@@ -133,7 +127,7 @@ setInterval(async () => {
 
   for (const [userId, expiresAt] of usersPaid.entries()) {
 
-    // 🚫 SKIP ADMIN (fix your error logs)
+    // 🚫 Skip admin (fix log spam)
     if (userId === ADMIN_ID) continue;
 
     if (now > expiresAt) {
