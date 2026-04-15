@@ -49,6 +49,9 @@ bot.on('message', (msg) => {
     const chatId = msg.chat.id;
     const text = msg.text;
 
+    console.log("User ID:",145044793);
+    console.log("ADMIN_ID:",8283814198);
+
     if (text === '/start') {
         bot.sendMessage(chatId, "Welcome 💫\nSend /buy to purchase.");
     }
