@@ -1,92 +1,108 @@
 const TelegramBot = require('node-telegram-bot-api');
+const express = require('express');
 
-console.log("🚀 STARTING BOT...");
+const TOKEN = process.env.BOT_TOKEN;
+const ADMIN_ID = Number(process.env.ADMIN_ID);
+const CHANNEL_ID = process.env.CHANNEL_ID; // "-100xxxxxxxxxx"
+const PAYPAL_LINK = process.env.PAYPAL_LINK;
 
-const token = process.env.BOT_TOKEN;
+const bot = new TelegramBot(TOKEN);
+const app = express();
 
-if (!token) {
-    console.log("❌ NO TOKEN FOUND");
-    process.exit(1);
+app.use(express.json());
+
+// 🔥 Webhook setup
+const WEBHOOK_URL = process.env.RAILWAY_STATIC_URL;
+
+if (WEBHOOK_URL) {
+  bot.setWebHook(`${WEBHOOK_URL}/bot${TOKEN}`);
+  console.log("✅ WEBHOOK SET");
 }
 
-const bot = new TelegramBot(token, { polling: true });
+// 📩 Telegram webhook endpoint
+app.post(`/bot${TOKEN}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
 
-console.log("✅ BOT STARTED");
+// 🚀 Start server
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
 
-// ===== CONFIG =====
-const ADMIN_ID = 8283814198; //
-const PAYPAL_LINK = "https://www.paypal.com/ncp/payment/GTK5FEXNGNBDU"; //
-const CHANNEL_ID = -1002841551368; //
-
-// ===== STORAGE =====
+// 💾 Temporary storage (later we can replace with database)
 const usersPaid = new Set();
 
-// ===== BOT LOGIC =====
+// 📩 Message handler
 bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    const text = msg.text;
+  const chatId = msg.chat.id;
+  const text = msg.text;
 
-    if (!text) return;
+  // 👋 Start
+  if (text === '/start') {
+    return bot.sendMessage(chatId, "👋 Welcome!\nUse /buy to get access.");
+  }
 
-    // ===== USER =====
+  // 💳 Buy button
+  if (text === '/buy') {
+    return bot.sendMessage(chatId, "💳 Click below to purchase:", {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "💰 Pay now", url: PAYPAL_LINK }]
+        ]
+      }
+    });
+  }
 
-    if (text === '/start') {
-        return bot.sendMessage(chatId, "Welcome 💫\nSend /buy to purchase.");
+  // 🆔 Get user ID
+  if (text === '/id') {
+    return bot.sendMessage(chatId, `Your ID: ${msg.from.id}`);
+  }
+
+  // 🔓 Access (SECURE LINK)
+  if (text === '/access') {
+    if (!usersPaid.has(msg.from.id)) {
+      return bot.sendMessage(chatId, "❌ You must purchase first.\nUse /buy");
     }
 
-    if (text === '/buy') {
-        return bot.sendMessage(chatId, `💳 Pay here:\n${PAYPAL_LINK}`);
-    }
+    try {
+      const invite = await bot.createChatInviteLink(CHANNEL_ID, {
+        member_limit: 1
+      });
 
-    if (text === '/id') {
-        return bot.sendMessage(chatId, `Your ID: ${msg.from.id}`);
-    }
-
-    // 🔐 ACCESS WITH SECURE INVITE LINK
-    if (text === '/access') {
-
-        if (!usersPaid.has(Number(msg.from.id))) {
-            return bot.sendMessage(chatId, "❌ You must purchase first.\nUse /buy");
+      return bot.sendMessage(chatId, "🔥 Click below to join your private channel:", {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🚀 Join Channel", url: invite.invite_link }]
+          ]
         }
+      });
 
-        try {
-            const invite = await bot.createChatInviteLink(CHANNEL_ID, {
-                member_limit: 1
-            });
+    } catch (err) {
+      console.log(err);
+      return bot.sendMessage(chatId, "❌ Error generating access link");
+    }
+  }
 
-            return bot.sendMessage(chatId, "🔓 Your private access:", {
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "Join Channel 🔥", url: invite.invite_link }]
-                    ]
-                }
-            });
+  // 🔐 ADMIN ONLY
+  if (msg.from.id !== ADMIN_ID) return;
 
-        } catch (err) {
-            console.log(err);
-            return bot.sendMessage(chatId, "❌ Error generating access link");
-        }
+  // 🧪 Test command
+  if (text === '/test') {
+    return bot.sendMessage(chatId, "Admin command works ✅");
+  }
+
+  // ✅ Approve user
+  if (text.startsWith('/approve')) {
+    const userId = Number(text.split(' ')[1]);
+
+    if (!userId) {
+      return bot.sendMessage(chatId, "❌ Invalid ID");
     }
 
-    // ===== ADMIN ONLY =====
-    if (msg.from.id != ADMIN_ID) return;
+    usersPaid.add(userId);
 
-    if (text === '/test') {
-        return bot.sendMessage(chatId, "Admin command works ✅");
-    }
-
-    // APPROVE USER
-    if (text.startsWith('/approve')) {
-
-        const parts = text.split(' ');
-        const userId = parseInt(parts[1]);
-
-        if (isNaN(userId)) {
-            return bot.sendMessage(chatId, "❌ Invalid ID");
-        }
-
-        usersPaid.add(userId);
-
-        return bot.sendMessage(chatId, `👑 Admin approved user ${userId}`);
-    }
+    return bot.sendMessage(chatId, `👑 Admin approved user ${userId}`);
+  }
 });
