@@ -67,7 +67,7 @@ bot.on('message', (msg) => {
     }
 
     if (text === '/id') {
-        bot.sendMessage(chatId, `8283814198: ${msg.from.id}`);
+        bot.sendMessage(chatId, `145044793: ${msg.from.id}`);
     }
 
     if (text === '/access') {
