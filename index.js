@@ -11,7 +11,7 @@ const app = express();
 
 app.use(express.json());
 
-// ===== WEBHOOK SETUP =====
+// ===== WEBHOOK =====
 const WEBHOOK_URL = process.env.RAILWAY_STATIC_URL;
 
 if (WEBHOOK_URL) {
@@ -32,9 +32,9 @@ app.listen(PORT, () => {
 });
 
 // ===== STORAGE =====
-const usersPaid = new Map(); // userId -> expiration timestamp
+const usersPaid = new Map();
 
-// ===== BOT LOGIC =====
+// ===== BOT =====
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text;
@@ -57,7 +57,7 @@ bot.on('message', async (msg) => {
     });
   }
 
-  // ===== GET ID =====
+  // ===== ID =====
   if (text === '/id') {
     return bot.sendMessage(chatId, `Your ID: ${msg.from.id}`);
   }
@@ -102,7 +102,7 @@ bot.on('message', async (msg) => {
     return bot.sendMessage(chatId, "Admin command works ✅");
   }
 
-  // ===== APPROVE (5 MINUTES TEST) =====
+  // ===== APPROVE (5 MIN TEST) =====
   if (text.startsWith('/approve')) {
     const userId = Number(text.split(' ')[1]);
 
@@ -110,20 +110,32 @@ bot.on('message', async (msg) => {
       return bot.sendMessage(chatId, "❌ Invalid ID");
     }
 
-    // ⏱️ 5 MINUTES TEST MODE
     const expiresAt = Date.now() + 5 * 60 * 1000;
 
     usersPaid.set(userId, expiresAt);
 
     return bot.sendMessage(chatId, `👑 User ${userId} approved for 5 minutes`);
   }
+
+  // ===== OPTIONAL: QUICK TEST FOR SECOND ACCOUNT =====
+  // 👉 Replace SECOND_ACCOUNT_ID with your second Telegram ID if you want auto approval
+  /*
+  if (msg.from.id === 629653870) {
+    const expiresAt = Date.now() + 5 * 60 * 1000;
+    usersPaid.set(msg.from.id, expiresAt);
+  }
+  */
 });
 
-// ===== AUTO REMOVE SYSTEM =====
+// ===== AUTO REMOVE =====
 setInterval(async () => {
   const now = Date.now();
 
   for (const [userId, expiresAt] of usersPaid.entries()) {
+
+    // 🚫 SKIP ADMIN (fix your error logs)
+    if (userId === ADMIN_ID) continue;
+
     if (now > expiresAt) {
       try {
         await bot.banChatMember(CHANNEL_ID, userId);
@@ -137,4 +149,4 @@ setInterval(async () => {
       }
     }
   }
-}, 60 * 1000); // every minute
+}, 60 * 1000);
