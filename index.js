@@ -1,4 +1,3 @@
-:::writing{variant=“standard” id=“tgpay01”}
 const TelegramBot = require(‘node-telegram-bot-api’);
 
 const token = process.env.BOT_TOKEN;
