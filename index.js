@@ -94,5 +94,5 @@ if (text.startsWith('/approve')) {
     usersPaid.add(userId);
     return bot.sendMessage(chatId, `✅ User ${userId} approved`);
 }
-    }
+
 });
