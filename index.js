@@ -147,10 +147,15 @@ setInterval(async () => {
   for (const [userId, expiresAt] of usersPaid.entries()) {
 
     console.log("👀 Checking:", userId, "expires at", new Date(expiresAt).toISOString());
+    console.log("⏱ NOW:", now);
+    console.log("⏱ EXPIRES:", expiresAt);
+    console.log("⏱ DIFF:", now - expiresAt);
 
     if (userId === ADMIN_ID) continue;
 
-    if (now > expiresAt) {
+    // ✅ FIXED CONDITION
+    if (now - expiresAt > 0) {
+
       console.log("⏳ Expired user:", userId);
 
       try {
