@@ -15,7 +15,7 @@ const bot = new TelegramBot(token, { polling: true });
 console.log("✅ BOT STARTED");
 
 // ===== CONFIG =====
-const ADMIN_ID = 145044793;
+const ADMIN_ID = 8283814198;
 const PAYPAL_LINK = "https://www.paypal.com/ncp/payment/GTK5FEXNGNBDU";
 
 // Store approved users (temporary memory)
