@@ -80,8 +80,7 @@ bot.on('message', async (msg) => {
         member_limit: 1
       });
 
-      // 🔥 DEBUG LINE
-      console.log("Invite link created:", invite.invite_link);
+      console.log("🔗 Invite created for:", msg.from.id, invite.invite_link);
 
       return bot.sendMessage(chatId, "🔥 Click below to join your private channel:", {
         reply_markup: {
@@ -92,7 +91,7 @@ bot.on('message', async (msg) => {
       });
 
     } catch (err) {
-      console.log(err);
+      console.log("❌ Invite error:", err.message);
       return bot.sendMessage(chatId, "❌ Error generating access link");
     }
   }
@@ -120,11 +119,13 @@ bot.on('message', async (msg) => {
 
     usersPaid.set(userId, expiresAt);
 
+    console.log("✅ Approved:", userId, "until", new Date(expiresAt));
+
     return bot.sendMessage(chatId, `👑 User ${userId} approved for 5 minutes`);
   }
 });
 
-// ===== AUTO REMOVE =====
+// ===== AUTO REMOVE (STRONG VERSION) =====
 setInterval(async () => {
   const now = Date.now();
 
@@ -133,16 +134,24 @@ setInterval(async () => {
     if (userId === ADMIN_ID) continue;
 
     if (now > expiresAt) {
+      console.log("⏳ Expired user:", userId);
+
       try {
+        // Step 1: Kick
         await bot.banChatMember(CHANNEL_ID, userId);
+        console.log("🚫 Banned:", userId);
+
+        // Step 2: Immediately unban (so they can rejoin later)
         await bot.unbanChatMember(CHANNEL_ID, userId);
+        console.log("♻️ Unbanned:", userId);
 
         usersPaid.delete(userId);
 
-        console.log(`❌ Removed expired user ${userId}`);
+        console.log("❌ Removed expired user:", userId);
+
       } catch (err) {
-        console.log(`Error removing user ${userId}`, err.message);
+        console.log("❌ Remove error:", userId, err.message);
       }
     }
   }
-}, 60 * 1000);
+}, 30 * 1000); // runs every 30 seconds
