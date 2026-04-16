@@ -1,13 +1,11 @@
 {
-  "name": "telegram-bot",
+  "name": "telegram-paypal-bot",
   "version": "1.0.0",
   "main": "index.js",
-  "scripts": {
-    "start": "node ./index.js"
-  },
+  "type": "commonjs",
   "dependencies": {
-    "node-telegram-bot-api": "^0.61.0",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "node-fetch": "^2.6.7",
+    "node-telegram-bot-api": "^0.61.0"
   }
 }
- 
