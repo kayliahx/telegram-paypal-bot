@@ -1,17 +1,98 @@
 const TelegramBot = require("node-telegram-bot-api");
 const express = require("express");
 
-// ✅ USE BUILT-IN FETCH (no dependency)
 const fetch = global.fetch;
 
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const app = express();
 app.use(express.json());
 
-const ADMIN_ID = Number(process.env.ADMIN_ID);
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
 const users = new Map();
+
+// =======================
+// START COMMAND (WITH BUTTON)
+// =======================
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(
+    msg.chat.id,
+    "👋 Welcome!\n\n💳 Get access to the private channel:",
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "💳 Buy Access", callback_data: "buy_access" }]
+        ],
+      },
+    }
+  );
+});
+
+// =======================
+// HANDLE BUTTON CLICK
+// =======================
+bot.on("callback_query", async (query) => {
+  const msg = query.message;
+  const userId = query.from.id;
+
+  if (query.data === "buy_access") {
+    try {
+      const url = await createOrder(userId);
+
+      bot.sendMessage(
+        msg.chat.id,
+        `💳 Complete your payment:\n${url}`
+      );
+    } catch (err) {
+      console.error(err);
+      bot.sendMessage(msg.chat.id, "❌ Payment error.");
+    }
+  }
+
+  bot.answerCallbackQuery(query.id);
+});
+
+// =======================
+// BUY COMMAND (STILL AVAILABLE)
+// =======================
+bot.onText(/\/buy/, async (msg) => {
+  const userId = msg.from.id;
+
+  try {
+    const url = await createOrder(userId);
+
+    bot.sendMessage(
+      msg.chat.id,
+      `💳 Complete your payment:\n${url}`
+    );
+  } catch (err) {
+    console.error(err);
+    bot.sendMessage(msg.chat.id, "❌ Payment error.");
+  }
+});
+
+// =======================
+// ID COMMAND
+// =======================
+bot.onText(/\/id/, (msg) => {
+  bot.sendMessage(msg.chat.id, `🆔 Your ID: ${msg.from.id}`);
+});
+
+// =======================
+// ACCESS COMMAND
+// =======================
+bot.onText(/\/access/, (msg) => {
+  const userId = msg.from.id;
+
+  if (!users.has(userId) || Date.now() > users.get(userId)) {
+    return bot.sendMessage(
+      msg.chat.id,
+      "❌ You must purchase first.\nUse /buy"
+    );
+  }
+
+  bot.sendMessage(msg.chat.id, "✅ You already have access.");
+});
 
 // =======================
 // PAYPAL TOKEN
@@ -72,42 +153,7 @@ async function createOrder(userId) {
 }
 
 // =======================
-// BUY COMMAND
-// =======================
-bot.onText(/\/buy/, async (msg) => {
-  const userId = msg.from.id;
-
-  try {
-    const url = await createOrder(userId);
-
-    bot.sendMessage(
-      msg.chat.id,
-      `💳 Complete your payment:\n${url}`
-    );
-  } catch (err) {
-    console.error(err);
-    bot.sendMessage(msg.chat.id, "❌ Payment error.");
-  }
-});
-
-// =======================
-// ACCESS COMMAND
-// =======================
-bot.onText(/\/access/, (msg) => {
-  const userId = msg.from.id;
-
-  if (!users.has(userId) || Date.now() > users.get(userId)) {
-    return bot.sendMessage(
-      msg.chat.id,
-      "❌ You must purchase first.\nUse /buy"
-    );
-  }
-
-  bot.sendMessage(msg.chat.id, "✅ You already have access.");
-});
-
-// =======================
-// WEBHOOK (FINAL)
+// WEBHOOK
 // =======================
 app.post("/paypal-webhook", async (req, res) => {
   const event = req.body;
@@ -122,26 +168,23 @@ app.post("/paypal-webhook", async (req, res) => {
 
       console.log("💰 Payment from user:", userId);
 
-      const duration = 5 * 60 * 1000; // ⏱ 5 MIN TEST
+      const duration = 5 * 60 * 1000;
       const expiry = Date.now() + duration;
 
       users.set(userId, expiry);
 
-      // Unban if previously kicked
       await bot.unbanChatMember(CHANNEL_ID, userId);
 
-      // Create 1-time invite link
       const invite = await bot.createChatInviteLink(CHANNEL_ID, {
         member_limit: 1,
       });
 
-      // Send access link
       await bot.sendMessage(
         userId,
         `✅ Payment received!\n\nJoin here:\n${invite.invite_link}`
       );
 
-      console.log("✅ Access granted to:", userId);
+      console.log("✅ Access granted:", userId);
     } catch (err) {
       console.error("❌ Webhook error:", err.message);
     }
@@ -151,7 +194,7 @@ app.post("/paypal-webhook", async (req, res) => {
 });
 
 // =======================
-// AUTO KICK SYSTEM
+// AUTO KICK
 // =======================
 setInterval(async () => {
   const now = Date.now();
@@ -171,7 +214,7 @@ setInterval(async () => {
 }, 30000);
 
 // =======================
-// START SERVER
+// SERVER
 // =======================
 app.listen(process.env.PORT || 8080, () => {
   console.log("🚀 Server running");
