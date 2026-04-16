@@ -12,7 +12,7 @@ const CHANNEL_ID = process.env.CHANNEL_ID;
 const users = new Map();
 
 // =======================
-// START COMMAND (WITH BUTTON)
+// START COMMAND (BUTTON)
 // =======================
 bot.onText(/\/start/, (msg) => {
   bot.sendMessage(
@@ -29,46 +29,35 @@ bot.onText(/\/start/, (msg) => {
 });
 
 // =======================
-// HANDLE BUTTON CLICK
+// BUTTON CLICK
 // =======================
 bot.on("callback_query", async (query) => {
-  const msg = query.message;
   const userId = query.from.id;
 
   if (query.data === "buy_access") {
-    try {
-      const url = await createOrder(userId);
+    const url = await createOrder(userId);
 
-      bot.sendMessage(
-        msg.chat.id,
-        `💳 Complete your payment:\n${url}`
-      );
-    } catch (err) {
-      console.error(err);
-      bot.sendMessage(msg.chat.id, "❌ Payment error.");
-    }
+    bot.sendMessage(
+      query.message.chat.id,
+      `💳 Complete your payment:\n${url}`
+    );
   }
 
   bot.answerCallbackQuery(query.id);
 });
 
 // =======================
-// BUY COMMAND (STILL AVAILABLE)
+// BUY COMMAND
 // =======================
 bot.onText(/\/buy/, async (msg) => {
   const userId = msg.from.id;
 
-  try {
-    const url = await createOrder(userId);
+  const url = await createOrder(userId);
 
-    bot.sendMessage(
-      msg.chat.id,
-      `💳 Complete your payment:\n${url}`
-    );
-  } catch (err) {
-    console.error(err);
-    bot.sendMessage(msg.chat.id, "❌ Payment error.");
-  }
+  bot.sendMessage(
+    msg.chat.id,
+    `💳 Complete your payment:\n${url}`
+  );
 });
 
 // =======================
@@ -141,7 +130,6 @@ async function createOrder(userId) {
           },
         ],
         application_context: {
-          // ✅ FIXED HERE
           return_url: "https://perceptive-empathy-production-18c6.up.railway.app/success",
           cancel_url: "https://perceptive-empathy-production-18c6.up.railway.app/cancel",
         },
@@ -154,41 +142,74 @@ async function createOrder(userId) {
 }
 
 // =======================
-// WEBHOOK
+// SUCCESS (CAPTURE PAYMENT)
+// =======================
+app.get("/success", async (req, res) => {
+  try {
+    const orderID = req.query.token;
+
+    const token = await getAccessToken();
+
+    const captureRes = await fetch(
+      `https://api-m.paypal.com/v2/checkout/orders/${orderID}/capture`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const data = await captureRes.json();
+
+    const userId = Number(
+      data.purchase_units[0].payments.captures[0].custom_id ||
+      data.purchase_units[0].custom_id
+    );
+
+    console.log("💰 Captured payment from:", userId);
+
+    const duration = 5 * 60 * 1000;
+    const expiry = Date.now() + duration;
+
+    users.set(userId, expiry);
+
+    await bot.unbanChatMember(CHANNEL_ID, userId);
+
+    const invite = await bot.createChatInviteLink(CHANNEL_ID, {
+      member_limit: 1,
+    });
+
+    await bot.sendMessage(
+      userId,
+      `✅ Payment successful!\n\nJoin here:\n${invite.invite_link}`
+    );
+
+    res.send("✅ Payment successful! You can return to Telegram.");
+  } catch (err) {
+    console.error("❌ Capture error:", err.message);
+    res.send("❌ Payment error.");
+  }
+});
+
+// =======================
+// CANCEL
+// =======================
+app.get("/cancel", (req, res) => {
+  res.send("❌ Payment cancelled.");
+});
+
+// =======================
+// WEBHOOK (BACKUP)
 // =======================
 app.post("/paypal-webhook", async (req, res) => {
   const event = req.body;
 
-  console.log("📩 Webhook received:", event.event_type);
+  console.log("📩 Webhook:", event.event_type);
 
   if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
-    try {
-      const userId = Number(
-        event.resource.purchase_units[0].custom_id
-      );
-
-      console.log("💰 Payment from user:", userId);
-
-      const duration = 5 * 60 * 1000;
-      const expiry = Date.now() + duration;
-
-      users.set(userId, expiry);
-
-      await bot.unbanChatMember(CHANNEL_ID, userId);
-
-      const invite = await bot.createChatInviteLink(CHANNEL_ID, {
-        member_limit: 1,
-      });
-
-      await bot.sendMessage(
-        userId,
-        `✅ Payment received!\n\nJoin here:\n${invite.invite_link}`
-      );
-
-      console.log("✅ Access granted:", userId);
-    } catch (err) {
-      console.error("❌ Webhook error:", err.message);
-    }
+    console.log("Webhook backup triggered");
   }
 
   res.sendStatus(200);
@@ -206,7 +227,7 @@ setInterval(async () => {
         await bot.banChatMember(CHANNEL_ID, userId);
         users.delete(userId);
 
-        console.log("⛔ User removed:", userId);
+        console.log("⛔ Removed:", userId);
       } catch (err) {
         console.log("Kick error:", err.message);
       }
