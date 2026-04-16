@@ -6,16 +6,16 @@ app.use(express.json());
 
 // ENV VARIABLES
 const token = process.env.BOT_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL_ID; // -100xxxxxxxxxx
-const ADMIN_ID = Number(process.env.ADMIN_ID); // your Telegram ID
+const CHANNEL_ID = process.env.CHANNEL_ID;
+const ADMIN_ID = Number(process.env.ADMIN_ID);
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
 const bot = new TelegramBot(token);
 
 // ===== STORAGE =====
-const users = new Map(); // userId => expiry timestamp
+const users = new Map();
 
-// ===== WEBHOOK SETUP =====
+// ===== WEBHOOK =====
 bot.setWebHook(`${WEBHOOK_URL}/bot${token}`);
 
 app.post(`/bot${token}`, (req, res) => {
@@ -42,20 +42,27 @@ bot.onText(/\/id/, (msg) => {
 bot.onText(/\/buy/, (msg) => {
   bot.sendMessage(
     msg.chat.id,
-    "💳 Purchase access here:\nYOUR_PAYPAL_LINK"
+    `💳 Purchase access here:\n${process.env.PAYPAL_LINK || "YOUR_PAYPAL_LINK"}`
   );
 });
 
-// ===== APPROVE (ADMIN ONLY) =====
+// ===== APPROVE (UPDATED) =====
 bot.onText(/\/approve (\d+)/, (msg, match) => {
   const adminId = msg.from.id;
 
   if (adminId !== ADMIN_ID) {
-    console.log("❌ Not admin:", adminId);
     return bot.sendMessage(msg.chat.id, "❌ You are not admin.");
   }
 
   const userId = Number(match[1]);
+
+  // 🚫 PREVENT DOUBLE APPROVAL
+  if (users.has(userId) && Date.now() < users.get(userId)) {
+    return bot.sendMessage(
+      msg.chat.id,
+      "⚠️ User already has active access."
+    );
+  }
 
   const duration = 5 * 60 * 1000; // 5 minutes
   const expiry = Date.now() + duration;
@@ -92,10 +99,9 @@ bot.onText(/\/access/, async (msg) => {
   }
 
   try {
-    // CREATE SINGLE-USE INVITE LINK
     const invite = await bot.createChatInviteLink(CHANNEL_ID, {
       member_limit: 1,
-      expire_date: Math.floor(Date.now() / 1000) + 300, // 5 min
+      expire_date: Math.floor(Date.now() / 1000) + 300,
     });
 
     console.log("🔗 Invite created:", invite.invite_link);
