@@ -1,4 +1,3 @@
-require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const express = require("express");
 const fetch = require("node-fetch");
@@ -51,7 +50,7 @@ async function createOrder(userId) {
         intent: "CAPTURE",
         purchase_units: [
           {
-            custom_id: String(userId), // 🔥 IMPORTANT
+            custom_id: String(userId),
             amount: {
               currency_code: "EUR",
               value: "1.00", // 🔥 CHANGE PRICE HERE
@@ -106,17 +105,15 @@ bot.onText(/\/access/, (msg) => {
 });
 
 // =======================
-// WEBHOOK (FINAL FIXED)
+// WEBHOOK (FINAL)
 // =======================
 app.post("/paypal-webhook", async (req, res) => {
   const event = req.body;
 
   console.log("📩 Webhook received:", event.event_type);
 
-  // ✅ CORRECT EVENT
   if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
     try {
-      // ✅ CORRECT USER ID EXTRACTION
       const userId = Number(
         event.resource.purchase_units[0].custom_id
       );
@@ -128,15 +125,14 @@ app.post("/paypal-webhook", async (req, res) => {
 
       users.set(userId, expiry);
 
-      // ✅ Allow user again if previously kicked
+      // Unban if needed
       await bot.unbanChatMember(CHANNEL_ID, userId);
 
-      // ✅ Create 1-time invite link
+      // Create invite link (1 use)
       const invite = await bot.createChatInviteLink(CHANNEL_ID, {
         member_limit: 1,
       });
 
-      // ✅ Send access
       await bot.sendMessage(
         userId,
         `✅ Payment received!\n\nJoin here:\n${invite.invite_link}`
@@ -169,7 +165,7 @@ setInterval(async () => {
       }
     }
   }
-}, 30000); // check every 30 sec
+}, 30000);
 
 // =======================
 // START SERVER
