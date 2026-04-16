@@ -1,196 +1,179 @@
+require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const express = require("express");
+const fetch = require("node-fetch");
 
+const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const app = express();
 app.use(express.json());
 
-// ENV VARIABLES
-const token = process.env.BOT_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL_ID;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
-const WEBHOOK_URL = process.env.WEBHOOK_URL;
-const PAYPAL_LINK = process.env.PAYPAL_LINK;
+const CHANNEL_ID = process.env.CHANNEL_ID;
 
-const bot = new TelegramBot(token);
-
-// ===== STORAGE =====
 const users = new Map();
 
-// ===== TELEGRAM WEBHOOK =====
-bot.setWebHook(`${WEBHOOK_URL}/bot${token}`);
+// =======================
+// PAYPAL TOKEN
+// =======================
+async function getAccessToken() {
+  const res = await fetch("https://api-m.paypal.com/v1/oauth2/token", {
+    method: "POST",
+    headers: {
+      Authorization:
+        "Basic " +
+        Buffer.from(
+          process.env.PAYPAL_CLIENT_ID + ":" + process.env.PAYPAL_SECRET
+        ).toString("base64"),
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=client_credentials",
+  });
 
-app.post(`/bot${token}`, (req, res) => {
-  bot.processUpdate(req.body);
-  res.sendStatus(200);
-});
+  const data = await res.json();
+  return data.access_token;
+}
 
-// ===== PAYPAL WEBHOOK =====
-app.post("/paypal-webhook", async (req, res) => {
-  const event = req.body;
+// =======================
+// CREATE ORDER
+// =======================
+async function createOrder(userId) {
+  const token = await getAccessToken();
 
-  console.log("💰 PayPal event:", event.event_type);
+  const res = await fetch(
+    "https://api-m.paypal.com/v2/checkout/orders",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            custom_id: String(userId), // 🔥 IMPORTANT
+            amount: {
+              currency_code: "EUR",
+              value: "1.00", // 🔥 CHANGE PRICE HERE
+            },
+          },
+        ],
+        application_context: {
+          return_url: "https://example.com/success",
+          cancel_url: "https://example.com/cancel",
+        },
+      }),
+    }
+  );
+
+  const data = await res.json();
+  return data.links.find((l) => l.rel === "approve").href;
+}
+
+// =======================
+// BUY COMMAND
+// =======================
+bot.onText(/\/buy/, async (msg) => {
+  const userId = msg.from.id;
 
   try {
-    if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
+    const url = await createOrder(userId);
 
-      const userId = Number(event.resource.custom_id);
-
-      if (!userId) {
-        console.log("❌ No userId in payment");
-        return res.sendStatus(200);
-      }
-
-      // prevent double approval
-      if (users.has(userId) && Date.now() < users.get(userId)) {
-        console.log("⚠️ Already active:", userId);
-        return res.sendStatus(200);
-      }
-
-      const duration = 5 * 60 * 1000;
-      const expiry = Date.now() + duration;
-
-      users.set(userId, expiry);
-
-      console.log("✅ AUTO APPROVED:", userId);
-
-      bot.sendMessage(userId, "✅ Payment received! Use /access");
-
-    }
-
-    res.sendStatus(200);
-  } catch (err) {
-    console.log("❌ PayPal webhook error:", err.message);
-    res.sendStatus(500);
-  }
-});
-
-// ===== BASIC COMMANDS =====
-
-// START
-bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-    "👋 Welcome!\n\nUse /buy to get access.\nThen /access to enter the private channel."
-  );
-});
-
-// ID
-bot.onText(/\/id/, (msg) => {
-  bot.sendMessage(msg.chat.id, `🆔 Your ID: ${msg.from.id}`);
-});
-
-// BUY (WITH TRACKING)
-bot.onText(/\/buy/, (msg) => {
-  const userId = msg.from.id;
-
-  const link = `${PAYPAL_LINK}?custom_id=${userId}`;
-
-  bot.sendMessage(
-    msg.chat.id,
-    `💳 Complete your payment:\n${link}`
-  );
-});
-
-// ===== APPROVE (ADMIN ONLY) =====
-bot.onText(/\/approve (\d+)/, (msg, match) => {
-  const adminId = msg.from.id;
-
-  if (adminId !== ADMIN_ID) {
-    return bot.sendMessage(msg.chat.id, "❌ You are not admin.");
-  }
-
-  const userId = Number(match[1]);
-
-  // prevent double approval
-  if (users.has(userId) && Date.now() < users.get(userId)) {
-    return bot.sendMessage(
+    bot.sendMessage(
       msg.chat.id,
-      "⚠️ User already has active access."
+      `💳 Complete your payment:\n${url}`
     );
+  } catch (err) {
+    console.error(err);
+    bot.sendMessage(msg.chat.id, "❌ Payment error.");
   }
-
-  const duration = 5 * 60 * 1000;
-  const expiry = Date.now() + duration;
-
-  users.set(userId, expiry);
-
-  console.log(`✅ Approved: ${userId}`);
-
-  bot.sendMessage(
-    msg.chat.id,
-    `👑 User ${userId} approved for 5 minutes`
-  );
 });
 
-// ===== ACCESS =====
-bot.onText(/\/access/, async (msg) => {
+// =======================
+// ACCESS COMMAND
+// =======================
+bot.onText(/\/access/, (msg) => {
   const userId = msg.from.id;
 
-  console.log("📩 Access request:", userId);
-
-  if (!users.has(userId)) {
+  if (!users.has(userId) || Date.now() > users.get(userId)) {
     return bot.sendMessage(
       msg.chat.id,
       "❌ You must purchase first.\nUse /buy"
     );
   }
 
-  const expiry = users.get(userId);
-
-  if (Date.now() > expiry) {
-    users.delete(userId);
-    return bot.sendMessage(msg.chat.id, "⏳ Your access expired.");
-  }
-
-  try {
-    const invite = await bot.createChatInviteLink(CHANNEL_ID, {
-      member_limit: 1,
-      expire_date: Math.floor(Date.now() / 1000) + 300,
-    });
-
-    console.log("🔗 Invite:", invite.invite_link);
-
-    bot.sendMessage(
-      msg.chat.id,
-      "🔥 Click below to join your private channel:",
-      {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "🚀 Join Channel", url: invite.invite_link }],
-          ],
-        },
-      }
-    );
-  } catch (err) {
-    console.log("❌ Invite error:", err.message);
-  }
+  bot.sendMessage(msg.chat.id, "✅ You already have access.");
 });
 
-// ===== AUTO REMOVE =====
+// =======================
+// WEBHOOK (FINAL FIXED)
+// =======================
+app.post("/paypal-webhook", async (req, res) => {
+  const event = req.body;
+
+  console.log("📩 Webhook received:", event.event_type);
+
+  // ✅ CORRECT EVENT
+  if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
+    try {
+      // ✅ CORRECT USER ID EXTRACTION
+      const userId = Number(
+        event.resource.purchase_units[0].custom_id
+      );
+
+      console.log("💰 Payment from user:", userId);
+
+      const duration = 5 * 60 * 1000; // ⏱ 5 MIN TEST
+      const expiry = Date.now() + duration;
+
+      users.set(userId, expiry);
+
+      // ✅ Allow user again if previously kicked
+      await bot.unbanChatMember(CHANNEL_ID, userId);
+
+      // ✅ Create 1-time invite link
+      const invite = await bot.createChatInviteLink(CHANNEL_ID, {
+        member_limit: 1,
+      });
+
+      // ✅ Send access
+      await bot.sendMessage(
+        userId,
+        `✅ Payment received!\n\nJoin here:\n${invite.invite_link}`
+      );
+
+      console.log("✅ Access granted to:", userId);
+    } catch (err) {
+      console.error("❌ Webhook error:", err.message);
+    }
+  }
+
+  res.sendStatus(200);
+});
+
+// =======================
+// AUTO KICK SYSTEM
+// =======================
 setInterval(async () => {
   const now = Date.now();
 
-  console.log("🧠 Checking users...");
-
   for (const [userId, expiry] of users.entries()) {
-
     if (now > expiry) {
-      console.log("⏰ Expired:", userId);
-
       try {
         await bot.banChatMember(CHANNEL_ID, userId);
-        await bot.unbanChatMember(CHANNEL_ID, userId);
-      } catch (err) {
-        console.log("⚠️ Kick error:", err.message);
-      }
+        users.delete(userId);
 
-      users.delete(userId);
+        console.log("⛔ User removed:", userId);
+      } catch (err) {
+        console.log("Kick error:", err.message);
+      }
     }
   }
-}, 30000);
+}, 30000); // check every 30 sec
 
-// ===== SERVER =====
-const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+// =======================
+// START SERVER
+// =======================
+app.listen(process.env.PORT || 8080, () => {
+  console.log("🚀 Server running");
 });
