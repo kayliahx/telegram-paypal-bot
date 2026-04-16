@@ -4,128 +4,142 @@ const express = require("express");
 const app = express();
 app.use(express.json());
 
-// ✅ FIX: ROOT ROUTE (VERY IMPORTANT)
-app.get("/", (req, res) => {
-  res.send("Bot is alive ✅");
-});
+// ENV VARIABLES
+const token = process.env.BOT_TOKEN;
+const CHANNEL_ID = process.env.CHANNEL_ID; // -100xxxxxxxxxx
+const ADMIN_ID = Number(process.env.ADMIN_ID); // your Telegram ID
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 
-// ================== CONFIG ==================
-const TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = Number(process.env.ADMIN_ID);
-const CHANNEL_ID = Number(process.env.CHANNEL_ID);
+const bot = new TelegramBot(token);
 
-const ACCESS_DURATION = 5 * 60 * 1000; // 5 minutes
+// ===== STORAGE =====
+const users = new Map(); // userId => expiry timestamp
 
-// ================== INIT ==================
-const bot = new TelegramBot(TOKEN);
-const users = new Map();
+// ===== WEBHOOK SETUP =====
+bot.setWebHook(`${WEBHOOK_URL}/bot${token}`);
 
-// ================== WEBHOOK ==================
-app.post(`/bot${TOKEN}`, (req, res) => {
+app.post(`/bot${token}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
 
-const PORT = process.env.PORT || 8080;
+// ===== BASIC COMMANDS =====
 
-app.listen(PORT, async () => {
-  console.log("🚀 Server running on port", PORT);
-
-  const url = `${process.env.RAILWAY_STATIC_URL}/bot${TOKEN}`;
-  await bot.setWebHook(url);
-  console.log("✅ WEBHOOK SET:", url);
+// START
+bot.onText(/\/start/, (msg) => {
+  bot.sendMessage(
+    msg.chat.id,
+    "👋 Welcome!\n\nUse /buy to get access.\nThen /access to enter the private channel."
+  );
 });
 
-// ================== ADMIN APPROVE ==================
-bot.onText(/\/approve (\d+)/, async (msg, match) => {
-  console.log("🟢 APPROVE CALLED BY:", msg.from.id);
+// ID
+bot.onText(/\/id/, (msg) => {
+  bot.sendMessage(msg.chat.id, `🆔 Your ID: ${msg.from.id}`);
+});
 
-  if (msg.from.id !== ADMIN_ID) {
-    console.log("❌ Not admin:", msg.from.id);
-    return;
+// BUY
+bot.onText(/\/buy/, (msg) => {
+  bot.sendMessage(
+    msg.chat.id,
+    "💳 Purchase access here:\nYOUR_PAYPAL_LINK"
+  );
+});
+
+// ===== APPROVE (ADMIN ONLY) =====
+bot.onText(/\/approve (\d+)/, (msg, match) => {
+  const adminId = msg.from.id;
+
+  if (adminId !== ADMIN_ID) {
+    console.log("❌ Not admin:", adminId);
+    return bot.sendMessage(msg.chat.id, "❌ You are not admin.");
   }
 
   const userId = Number(match[1]);
 
-  const expireAt = Date.now() + ACCESS_DURATION;
-  users.set(userId, { expireAt });
+  const duration = 5 * 60 * 1000; // 5 minutes
+  const expiry = Date.now() + duration;
 
-  console.log("✅ Approved:", userId, "until", new Date(expireAt));
+  users.set(userId, expiry);
+
+  console.log(`✅ Approved: ${userId} until ${new Date(expiry).toISOString()}`);
 
   bot.sendMessage(
     msg.chat.id,
-    `👑 User ${userId} approved for ${ACCESS_DURATION / 60000} minutes`
+    `👑 User ${userId} approved for 5 minutes`
   );
 });
 
-// ================== ACCESS ==================
+// ===== ACCESS =====
 bot.onText(/\/access/, async (msg) => {
   const userId = msg.from.id;
 
-  console.log("📥 Access request from:", userId);
+  console.log("📩 Access request from:", userId);
   console.log("📦 Stored users:", users);
 
   if (!users.has(userId)) {
-    return bot.sendMessage(msg.chat.id, "❌ You must purchase first.\nUse /buy");
+    return bot.sendMessage(
+      msg.chat.id,
+      "❌ You must purchase first.\nUse /buy"
+    );
+  }
+
+  const expiry = users.get(userId);
+
+  if (Date.now() > expiry) {
+    users.delete(userId);
+    return bot.sendMessage(msg.chat.id, "⏳ Your access expired.");
   }
 
   try {
+    // CREATE SINGLE-USE INVITE LINK
     const invite = await bot.createChatInviteLink(CHANNEL_ID, {
       member_limit: 1,
-      expire_date: Math.floor((Date.now() + 5 * 60 * 1000) / 1000),
+      expire_date: Math.floor(Date.now() / 1000) + 300, // 5 min
     });
 
     console.log("🔗 Invite created:", invite.invite_link);
 
-    // 🔒 AUTO REVOKE AFTER 15 SECONDS
-    setTimeout(async () => {
-      try {
-        await bot.revokeChatInviteLink(CHANNEL_ID, invite.invite_link);
-        console.log("🔒 Link revoked:", invite.invite_link);
-      } catch (e) {
-        console.log("❌ Revoke error:", e.message);
+    bot.sendMessage(
+      msg.chat.id,
+      "🔥 Click below to join your private channel:",
+      {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🚀 Join Channel", url: invite.invite_link }],
+          ],
+        },
       }
-    }, 15000);
-
-    bot.sendMessage(msg.chat.id, "🔥 Here is your private access:", {
-      reply_markup: {
-        inline_keyboard: [[{ text: "🔓 Join Channel", url: invite.invite_link }]],
-      },
-    });
+    );
   } catch (err) {
-    console.log("❌ Invite error:", err.message);
+    console.error("❌ Invite error:", err);
+    bot.sendMessage(msg.chat.id, "❌ Error generating link.");
   }
 });
 
-// ================== AUTO REMOVE ==================
+// ===== AUTO REMOVE SYSTEM =====
 setInterval(async () => {
-  console.log("🧠 Checking users...", new Date().toISOString());
-
   const now = Date.now();
 
-  for (const [userId, data] of users.entries()) {
+  console.log("🧠 Checking users...", new Date().toISOString());
+
+  for (const [userId, expiry] of users.entries()) {
     console.log("👀 Checking:", userId);
-
     console.log("🕒 NOW:", now);
-    console.log("⏳ EXPIRES:", data.expireAt);
-    console.log("📉 DIFF:", data.expireAt - now);
+    console.log("⏳ EXPIRES:", expiry);
+    console.log("📉 DIFF:", expiry - now);
 
-    if (now > data.expireAt) {
-      console.log("⏳ Expired:", userId);
+    if (now > expiry) {
+      console.log("⏰ Expired:", userId);
 
       try {
-        const member = await bot.getChatMember(CHANNEL_ID, userId);
-        console.log("👤 Member status:", member.status);
+        await bot.banChatMember(CHANNEL_ID, userId);
+        console.log("🚫 Banned:", userId);
 
-        if (member.status === "member" || member.status === "restricted") {
-          await bot.banChatMember(CHANNEL_ID, userId);
-          console.log("🚫 Banned:", userId);
-
-          await bot.unbanChatMember(CHANNEL_ID, userId);
-          console.log("♻️ Unbanned:", userId);
-        }
-      } catch (e) {
-        console.log("❌ REMOVE ERROR FULL:", e.response?.body || e.message);
+        await bot.unbanChatMember(CHANNEL_ID, userId);
+        console.log("♻️ Unbanned:", userId);
+      } catch (err) {
+        console.log("⚠️ Kick error:", err.message);
       }
 
       users.delete(userId);
@@ -134,8 +148,8 @@ setInterval(async () => {
   }
 }, 30000);
 
-// ================== TEST ==================
-bot.onText(/\/test/, (msg) => {
-  if (msg.from.id !== ADMIN_ID) return;
-  bot.sendMessage(msg.chat.id, "Admin command works ✅");
+// ===== SERVER =====
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
