@@ -4,12 +4,17 @@ const express = require("express");
 const app = express();
 app.use(express.json());
 
+// ✅ FIX: ROOT ROUTE (VERY IMPORTANT)
+app.get("/", (req, res) => {
+  res.send("Bot is alive ✅");
+});
+
 // ================== CONFIG ==================
 const TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const CHANNEL_ID = Number(process.env.CHANNEL_ID);
 
-const ACCESS_DURATION = 5 * 60 * 1000; // 5 minutes (change later)
+const ACCESS_DURATION = 5 * 60 * 1000; // 5 minutes
 
 // ================== INIT ==================
 const bot = new TelegramBot(TOKEN);
@@ -66,8 +71,8 @@ bot.onText(/\/access/, async (msg) => {
 
   try {
     const invite = await bot.createChatInviteLink(CHANNEL_ID, {
-      member_limit: 1, // ✅ SINGLE USE
-      expire_date: Math.floor((Date.now() + 5 * 60 * 1000) / 1000), // link expires in 5 min
+      member_limit: 1,
+      expire_date: Math.floor((Date.now() + 5 * 60 * 1000) / 1000),
     });
 
     console.log("🔗 Invite created:", invite.invite_link);
