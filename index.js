@@ -136,13 +136,14 @@ async function createOrder(userId) {
             custom_id: String(userId),
             amount: {
               currency_code: "EUR",
-              value: "1.00", // 🔥 CHANGE PRICE HERE
+              value: "1.00",
             },
           },
         ],
         application_context: {
-          return_url: "https://example.com/success",
-          cancel_url: "https://example.com/cancel",
+          // ✅ FIXED HERE
+          return_url: "https://perceptive-empathy-production-18c6.up.railway.app/success",
+          cancel_url: "https://perceptive-empathy-production-18c6.up.railway.app/cancel",
         },
       }),
     }
