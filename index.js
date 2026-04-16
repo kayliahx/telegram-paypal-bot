@@ -9,18 +9,59 @@ const token = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const ADMIN_ID = Number(process.env.ADMIN_ID);
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
+const PAYPAL_LINK = process.env.PAYPAL_LINK;
 
 const bot = new TelegramBot(token);
 
 // ===== STORAGE =====
 const users = new Map();
 
-// ===== WEBHOOK =====
+// ===== TELEGRAM WEBHOOK =====
 bot.setWebHook(`${WEBHOOK_URL}/bot${token}`);
 
 app.post(`/bot${token}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
+});
+
+// ===== PAYPAL WEBHOOK =====
+app.post("/paypal-webhook", async (req, res) => {
+  const event = req.body;
+
+  console.log("💰 PayPal event:", event.event_type);
+
+  try {
+    if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
+
+      const userId = Number(event.resource.custom_id);
+
+      if (!userId) {
+        console.log("❌ No userId in payment");
+        return res.sendStatus(200);
+      }
+
+      // prevent double approval
+      if (users.has(userId) && Date.now() < users.get(userId)) {
+        console.log("⚠️ Already active:", userId);
+        return res.sendStatus(200);
+      }
+
+      const duration = 5 * 60 * 1000;
+      const expiry = Date.now() + duration;
+
+      users.set(userId, expiry);
+
+      console.log("✅ AUTO APPROVED:", userId);
+
+      bot.sendMessage(userId, "✅ Payment received! Use /access");
+
+    }
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.log("❌ PayPal webhook error:", err.message);
+    res.sendStatus(500);
+  }
 });
 
 // ===== BASIC COMMANDS =====
@@ -38,15 +79,19 @@ bot.onText(/\/id/, (msg) => {
   bot.sendMessage(msg.chat.id, `🆔 Your ID: ${msg.from.id}`);
 });
 
-// BUY
+// BUY (WITH TRACKING)
 bot.onText(/\/buy/, (msg) => {
+  const userId = msg.from.id;
+
+  const link = `${PAYPAL_LINK}?custom_id=${userId}`;
+
   bot.sendMessage(
     msg.chat.id,
-    `💳 Purchase access here:\n${process.env.PAYPAL_LINK || "YOUR_PAYPAL_LINK"}`
+    `💳 Complete your payment:\n${link}`
   );
 });
 
-// ===== APPROVE (UPDATED) =====
+// ===== APPROVE (ADMIN ONLY) =====
 bot.onText(/\/approve (\d+)/, (msg, match) => {
   const adminId = msg.from.id;
 
@@ -56,7 +101,7 @@ bot.onText(/\/approve (\d+)/, (msg, match) => {
 
   const userId = Number(match[1]);
 
-  // 🚫 PREVENT DOUBLE APPROVAL
+  // prevent double approval
   if (users.has(userId) && Date.now() < users.get(userId)) {
     return bot.sendMessage(
       msg.chat.id,
@@ -64,12 +109,12 @@ bot.onText(/\/approve (\d+)/, (msg, match) => {
     );
   }
 
-  const duration = 5 * 60 * 1000; // 5 minutes
+  const duration = 5 * 60 * 1000;
   const expiry = Date.now() + duration;
 
   users.set(userId, expiry);
 
-  console.log(`✅ Approved: ${userId} until ${new Date(expiry).toISOString()}`);
+  console.log(`✅ Approved: ${userId}`);
 
   bot.sendMessage(
     msg.chat.id,
@@ -81,8 +126,7 @@ bot.onText(/\/approve (\d+)/, (msg, match) => {
 bot.onText(/\/access/, async (msg) => {
   const userId = msg.from.id;
 
-  console.log("📩 Access request from:", userId);
-  console.log("📦 Stored users:", users);
+  console.log("📩 Access request:", userId);
 
   if (!users.has(userId)) {
     return bot.sendMessage(
@@ -104,7 +148,7 @@ bot.onText(/\/access/, async (msg) => {
       expire_date: Math.floor(Date.now() / 1000) + 300,
     });
 
-    console.log("🔗 Invite created:", invite.invite_link);
+    console.log("🔗 Invite:", invite.invite_link);
 
     bot.sendMessage(
       msg.chat.id,
@@ -118,38 +162,29 @@ bot.onText(/\/access/, async (msg) => {
       }
     );
   } catch (err) {
-    console.error("❌ Invite error:", err);
-    bot.sendMessage(msg.chat.id, "❌ Error generating link.");
+    console.log("❌ Invite error:", err.message);
   }
 });
 
-// ===== AUTO REMOVE SYSTEM =====
+// ===== AUTO REMOVE =====
 setInterval(async () => {
   const now = Date.now();
 
-  console.log("🧠 Checking users...", new Date().toISOString());
+  console.log("🧠 Checking users...");
 
   for (const [userId, expiry] of users.entries()) {
-    console.log("👀 Checking:", userId);
-    console.log("🕒 NOW:", now);
-    console.log("⏳ EXPIRES:", expiry);
-    console.log("📉 DIFF:", expiry - now);
 
     if (now > expiry) {
       console.log("⏰ Expired:", userId);
 
       try {
         await bot.banChatMember(CHANNEL_ID, userId);
-        console.log("🚫 Banned:", userId);
-
         await bot.unbanChatMember(CHANNEL_ID, userId);
-        console.log("♻️ Unbanned:", userId);
       } catch (err) {
         console.log("⚠️ Kick error:", err.message);
       }
 
       users.delete(userId);
-      console.log("❌ Removed from system:", userId);
     }
   }
 }, 30000);
