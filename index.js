@@ -1,6 +1,8 @@
 const TelegramBot = require("node-telegram-bot-api");
 const express = require("express");
-const fetch = require("node-fetch");
+
+// ✅ USE BUILT-IN FETCH (no dependency)
+const fetch = global.fetch;
 
 const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
 const app = express();
@@ -125,14 +127,15 @@ app.post("/paypal-webhook", async (req, res) => {
 
       users.set(userId, expiry);
 
-      // Unban if needed
+      // Unban if previously kicked
       await bot.unbanChatMember(CHANNEL_ID, userId);
 
-      // Create invite link (1 use)
+      // Create 1-time invite link
       const invite = await bot.createChatInviteLink(CHANNEL_ID, {
         member_limit: 1,
       });
 
+      // Send access link
       await bot.sendMessage(
         userId,
         `✅ Payment received!\n\nJoin here:\n${invite.invite_link}`
