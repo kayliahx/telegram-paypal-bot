@@ -1,243 +1,200 @@
 import express from "express";
 import TelegramBot from "node-telegram-bot-api";
 import pkg from "pg";
+import fetch from "node-fetch";
+
 const { Pool } = pkg;
 
 const app = express();
 app.use(express.json());
 
-// ===== ENV =====
-const TOKEN = process.env.BOT_TOKEN;
-const WEBHOOK_URL = process.env.WEBHOOK_URL;
-const ADMIN_ID = process.env.ADMIN_ID;
-const PAYPAL_LINK = process.env.PAYPAL_LINK;
+// ================== ENV ==================
+const BOT_TOKEN = process.env.BOT_TOKEN;
+const CHANNEL_ID = process.env.CHANNEL_ID;
+const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
+const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-// ===== TELEGRAM =====
-const bot = new TelegramBot(TOKEN);
+const bot = new TelegramBot(BOT_TOKEN);
 
-// ===== DATABASE =====
+// ================== DB ==================
 const pool = new Pool({
   connectionString: DATABASE_URL,
   ssl: { rejectUnauthorized: false },
 });
 
-// ===== INIT DB =====
-(async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      user_id BIGINT PRIMARY KEY,
-      expiry BIGINT
-    );
-  `);
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id BIGINT PRIMARY KEY,
+    has_access BOOLEAN DEFAULT false,
+    created_at TIMESTAMP DEFAULT NOW()
+  )
+`);
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS payments (
-      id TEXT PRIMARY KEY
-    );
-  `);
+// ================== PAYPAL TOKEN ==================
+async function getAccessToken() {
+  const res = await fetch("https://api-m.paypal.com/v1/oauth2/token", {
+    method: "POST",
+    headers: {
+      Authorization:
+        "Basic " +
+        Buffer.from(
+          `${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`
+        ).toString("base64"),
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=client_credentials",
+  });
 
-  console.log("✅ Database ready");
-})();
-
-// ===== HELPERS =====
-async function getUser(userId) {
-  const res = await pool.query(
-    "SELECT * FROM users WHERE user_id = $1",
-    [userId]
-  );
-  return res.rows[0];
+  const data = await res.json();
+  return data.access_token;
 }
 
-async function setUser(userId, expiry) {
-  await pool.query(
-    `INSERT INTO users (user_id, expiry)
-     VALUES ($1, $2)
-     ON CONFLICT (user_id)
-     DO UPDATE SET expiry = EXCLUDED.expiry`,
-    [userId, expiry]
-  );
-}
+// ================== CREATE ORDER ==================
+async function createOrder(userId) {
+  const accessToken = await getAccessToken();
 
-// ===== TELEGRAM WEBHOOK =====
-app.post("/webhook", async (req, res) => {
-  try {
-    const update = req.body;
-
-    if (!update.message) return res.sendStatus(200);
-
-    const msg = update.message;
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-
-    // 🔥 FIXED COMMAND PARSER
-    const text = (msg.text || "")
-      .split(" ")[0]
-      .split("@")[0];
-
-    console.log("💬", userId, text);
-
-    if (!text) return res.sendStatus(200);
-
-    switch (text) {
-      case "/start":
-        await bot.sendMessage(
-          chatId,
-          "👋 Welcome!\n\nUse /buy to get access\nUse /status to check access"
-        );
-        break;
-
-      case "/buy": {
-        // 💰 DYNAMIC PAYMENT LINK
-        const dynamicLink = `${PAYPAL_LINK}?custom_id=${userId}`;
-
-        await bot.sendMessage(
-          chatId,
-          `💳 Pay securely:\n${dynamicLink}`
-        );
-        break;
-      }
-
-      case "/status": {
-        const user = await getUser(userId);
-
-        if (!user || Date.now() > user.expiry) {
-          await bot.sendMessage(chatId, "❌ No active subscription");
-        } else {
-          const timeLeft = Math.floor(
-            (user.expiry - Date.now()) / 60000
-          );
-
-          await bot.sendMessage(
-            chatId,
-            `✅ Active\n⏳ ${timeLeft} minutes left`
-          );
-        }
-        break;
-      }
-
-      default:
-        console.log("⚠️ Unknown command:", text);
+  const res = await fetch(
+    "https://api-m.paypal.com/v2/checkout/orders",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            amount: {
+              currency_code: "EUR",
+              value: "0.50",
+            },
+            custom_id: String(userId), // 🔥 important
+          },
+        ],
+        application_context: {
+          return_url: "https://example.com/success",
+          cancel_url: "https://example.com/cancel",
+        },
+      }),
     }
+  );
 
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ Telegram webhook error:", err);
-    res.sendStatus(500);
+  const data = await res.json();
+
+  return data.links.find((l) => l.rel === "approve").href;
+}
+
+// ================== COMMANDS ==================
+
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  await pool.query(
+    `INSERT INTO users (id) VALUES ($1)
+     ON CONFLICT (id) DO NOTHING`,
+    [chatId]
+  );
+
+  await bot.sendMessage(
+    chatId,
+    `👋 Welcome!
+
+Use /buy to get access  
+Use /status to check access`
+  );
+});
+
+bot.onText(/\/buy/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  const checkoutUrl = await createOrder(chatId);
+
+  await bot.sendMessage(
+    chatId,
+    `💳 Complete your payment:\n${checkoutUrl}`
+  );
+});
+
+bot.onText(/\/status/, async (msg) => {
+  const chatId = msg.chat.id;
+
+  const result = await pool.query(
+    `SELECT has_access FROM users WHERE id=$1`,
+    [chatId]
+  );
+
+  if (result.rows.length && result.rows[0].has_access) {
+    await bot.sendMessage(chatId, "✅ You have access");
+  } else {
+    await bot.sendMessage(chatId, "❌ No active access");
   }
 });
 
-// ===== PAYPAL WEBHOOK =====
+// ================== WEBHOOK ==================
+
 app.post("/paypal-webhook", async (req, res) => {
   console.log("💰 PayPal webhook received");
 
+  const event = req.body;
+
   try {
-    const transmissionId = req.headers["paypal-transmission-id"];
-    const timeStamp = req.headers["paypal-transmission-time"];
-    const certUrl = req.headers["paypal-cert-url"];
-    const authAlgo = req.headers["paypal-auth-algo"];
-    const transmissionSig = req.headers["paypal-transmission-sig"];
+    if (event.event_type !== "PAYMENT.CAPTURE.COMPLETED") {
+      return res.sendStatus(200);
+    }
 
-    const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+    // 🔥 FIXED USER ID EXTRACTION
+    const userId =
+      event.resource?.purchase_units?.[0]?.custom_id;
 
-    const verifyRes = await fetch(
-      "https://api-m.paypal.com/v1/notifications/verify-webhook-signature",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization:
-            "Basic " +
-            Buffer.from(
-              `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
-            ).toString("base64"),
-        },
-        body: JSON.stringify({
-          transmission_id: transmissionId,
-          transmission_time: timeStamp,
-          cert_url: certUrl,
-          auth_algo: authAlgo,
-          transmission_sig: transmissionSig,
-          webhook_id: webhookId,
-          webhook_event: req.body,
-        }),
-      }
+    if (!userId) {
+      console.log("❌ No userId in purchase_units");
+      console.log(JSON.stringify(event.resource, null, 2)); // debug
+      return res.sendStatus(200);
+    }
+
+    if (!/^\d+$/.test(userId)) {
+      console.log("❌ Invalid userId format:", userId);
+      return res.sendStatus(200);
+    }
+
+    // ================== SAVE ACCESS ==================
+    await pool.query(
+      `INSERT INTO users (id, has_access)
+       VALUES ($1, true)
+       ON CONFLICT (id)
+       DO UPDATE SET has_access = true`,
+      [userId]
     );
 
-    const verifyData = await verifyRes.json();
+    // ================== CREATE INVITE ==================
+    const inviteLink = await bot.createChatInviteLink(CHANNEL_ID, {
+      member_limit: 1,
+    });
 
-    if (verifyData.verification_status !== "SUCCESS") {
-      console.log("❌ Invalid PayPal signature");
-      return res.sendStatus(400);
-    }
+    // ================== SEND ACCESS ==================
+    await bot.sendMessage(
+      userId,
+      `🎉 Payment received!
 
-    const event = req.body;
+Here is your private access:
+${inviteLink.invite_link}`
+    );
 
-    if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
-      const paymentId = event.resource.id;
+    console.log("✅ Access granted to", userId);
 
-      // 🔁 Prevent duplicate payments
-      const existing = await pool.query(
-        "SELECT * FROM payments WHERE id = $1",
-        [paymentId]
-      );
-
-      if (existing.rows.length > 0) {
-        console.log("⚠️ Duplicate payment ignored");
-        return res.sendStatus(200);
-      }
-
-      await pool.query(
-        "INSERT INTO payments (id) VALUES ($1)",
-        [paymentId]
-      );
-
-      // 🧠 SAFE USER ID EXTRACTION
-      const userId =
-        event.resource.custom_id ||
-        event.resource.invoice_id ||
-        event.resource.note;
-
-      if (!userId) {
-        console.log("❌ No userId found in payment");
-        return res.sendStatus(200);
-      }
-
-      // 🛡️ VALIDATE USER ID
-      if (!/^\d+$/.test(userId)) {
-        console.log("❌ Invalid userId format");
-        return res.sendStatus(200);
-      }
-
-      // ⏳ Grant access (24h)
-      const expiry = Date.now() + 24 * 60 * 60 * 1000;
-
-      await setUser(userId, expiry);
-
-      await bot.sendMessage(
-        userId,
-        "✅ Payment received! Access granted 🎉"
-      );
-
-      console.log("✅ Access granted to", userId);
-    }
-
-    res.sendStatus(200);
   } catch (err) {
-    console.error("❌ PayPal webhook error:", err);
-    res.sendStatus(500);
+    console.log("❌ Error:", err.message);
   }
+
+  res.sendStatus(200);
 });
 
-// ===== START SERVER =====
+// ================== SERVER ==================
+
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, async () => {
-  console.log("🚀 Server running");
-
-  const webhook = `${WEBHOOK_URL}/webhook`;
-
-  await bot.setWebHook(webhook);
-
-  console.log("🔗 Webhook set:", webhook);
+app.listen(PORT, () => {
+  console.log("🚀 Server running on port", PORT);
 });
