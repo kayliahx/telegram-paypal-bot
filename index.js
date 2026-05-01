@@ -3,40 +3,35 @@ const express = require("express");
 
 const fetch = global.fetch;
 
-const TOKEN = process.env.BOT_TOKEN;
-const CHANNEL_ID = process.env.CHANNEL_ID;
-const BASE_URL = "https://perceptive-empathy-production-18c6.up.railway.app";
-
-const bot = new TelegramBot(TOKEN); // ✅ NO POLLING
+const bot = new TelegramBot(process.env.BOT_TOKEN);
 const app = express();
-
 app.use(express.json());
 
+const CHANNEL_ID = process.env.CHANNEL_ID;
 const users = new Map();
 
 // =======================
-// ✅ WEBHOOK ROUTE (FIXED)
+// WEBHOOK SETUP
+// =======================
+const WEBHOOK_URL = "https://perceptive-empathy-production-18c6.up.railway.app/webhook";
+
+bot.setWebHook(WEBHOOK_URL)
+  .then(() => console.log("🔗 Webhook set:", WEBHOOK_URL))
+  .catch(err => console.error("Webhook error:", err.message));
+
+// =======================
+// RECEIVE UPDATES
 // =======================
 app.post("/webhook", (req, res) => {
-  console.log("📩 Update received:", JSON.stringify(req.body));
-
   bot.processUpdate(req.body);
-
   res.sendStatus(200);
-});
-
-// =======================
-// DEBUG LISTENER
-// =======================
-bot.on("message", (msg) => {
-  console.log("📨 Message:", msg.text);
 });
 
 // =======================
 // START COMMAND
 // =======================
 bot.onText(/\/start/, (msg) => {
-  console.log("👤 /start from:", msg.from.id);
+  console.log("📩 /start from", msg.from.id);
 
   bot.sendMessage(
     msg.chat.id,
@@ -57,20 +52,13 @@ bot.onText(/\/start/, (msg) => {
 bot.on("callback_query", async (query) => {
   const userId = query.from.id;
 
-  console.log("🖱 Button clicked:", userId);
-
   if (query.data === "buy_access") {
-    try {
-      const url = await createOrder(userId);
+    const url = await createOrder(userId);
 
-      bot.sendMessage(
-        query.message.chat.id,
-        `💳 Complete your payment:\n${url}`
-      );
-    } catch (err) {
-      console.error("❌ Order error:", err.message);
-      bot.sendMessage(query.message.chat.id, "❌ Payment error.");
-    }
+    bot.sendMessage(
+      query.message.chat.id,
+      `💳 Complete your payment:\n${url}`
+    );
   }
 
   bot.answerCallbackQuery(query.id);
@@ -82,8 +70,6 @@ bot.on("callback_query", async (query) => {
 bot.onText(/\/buy/, async (msg) => {
   const userId = msg.from.id;
 
-  console.log("💰 /buy from:", userId);
-
   if (users.has(userId) && Date.now() < users.get(userId)) {
     return bot.sendMessage(
       msg.chat.id,
@@ -91,17 +77,12 @@ bot.onText(/\/buy/, async (msg) => {
     );
   }
 
-  try {
-    const url = await createOrder(userId);
+  const url = await createOrder(userId);
 
-    bot.sendMessage(
-      msg.chat.id,
-      `💳 Complete your payment:\n${url}`
-    );
-  } catch (err) {
-    console.error("❌ Order error:", err.message);
-    bot.sendMessage(msg.chat.id, "❌ Payment error.");
-  }
+  bot.sendMessage(
+    msg.chat.id,
+    `💳 Complete your payment:\n${url}`
+  );
 });
 
 // =======================
@@ -125,6 +106,40 @@ bot.onText(/\/access/, (msg) => {
   }
 
   bot.sendMessage(msg.chat.id, "✅ You already have access.");
+});
+
+// =======================
+// STATUS COMMAND ✅
+// =======================
+bot.onText(/\/status/, (msg) => {
+  const userId = msg.from.id;
+
+  if (!users.has(userId)) {
+    return bot.sendMessage(
+      msg.chat.id,
+      "❌ You don’t have active access."
+    );
+  }
+
+  const expiry = users.get(userId);
+
+  if (Date.now() > expiry) {
+    return bot.sendMessage(
+      msg.chat.id,
+      "❌ Your access has expired.\nUse /buy to renew."
+    );
+  }
+
+  const timeLeftMs = expiry - Date.now();
+
+  const minutes = Math.floor(timeLeftMs / 60000);
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+
+  bot.sendMessage(
+    msg.chat.id,
+    `⏳ Time remaining:\n${hours}h ${remainingMinutes}m`
+  );
 });
 
 // =======================
@@ -174,17 +189,16 @@ async function createOrder(userId) {
           },
         ],
         application_context: {
-          return_url: `${BASE_URL}/success`,
-          cancel_url: `${BASE_URL}/cancel`,
+          return_url:
+            "https://perceptive-empathy-production-18c6.up.railway.app/success",
+          cancel_url:
+            "https://perceptive-empathy-production-18c6.up.railway.app/cancel",
         },
       }),
     }
   );
 
   const data = await res.json();
-
-  console.log("🧾 Order created:", data.id);
-
   return data.links.find((l) => l.rel === "approve").href;
 }
 
@@ -194,8 +208,6 @@ async function createOrder(userId) {
 app.get("/success", async (req, res) => {
   try {
     const orderID = req.query.token;
-
-    console.log("✅ Payment success hit:", orderID);
 
     const token = await getAccessToken();
 
@@ -212,12 +224,12 @@ app.get("/success", async (req, res) => {
 
     const data = await captureRes.json();
 
-    console.log("💰 Capture:", JSON.stringify(data));
-
     const userId = Number(
       data.purchase_units[0].payments.captures[0].custom_id ||
       data.purchase_units[0].custom_id
     );
+
+    console.log("💰 PAYMENT:", userId);
 
     const duration = 5 * 60 * 1000;
     const expiry = Date.now() + duration;
@@ -250,19 +262,19 @@ app.get("/cancel", (req, res) => {
 });
 
 // =======================
-// RENEWAL REMINDER
+// REMINDER SYSTEM
 // =======================
 setInterval(async () => {
   const now = Date.now();
 
   for (const [userId, expiry] of users.entries()) {
-    if (expiry - now < 60000 && expiry - now > 30000) {
-      try {
-        await bot.sendMessage(
-          userId,
-          "⚠️ Your access expires soon.\nUse /buy to renew."
-        );
-      } catch {}
+    const timeLeft = expiry - now;
+
+    if (timeLeft > 0 && timeLeft < 60000) {
+      await bot.sendMessage(
+        userId,
+        "⏳ Your access expires soon!\nUse /buy to renew."
+      );
     }
   }
 }, 30000);
@@ -288,20 +300,8 @@ setInterval(async () => {
 }, 30000);
 
 // =======================
-// START SERVER + SET WEBHOOK
+// SERVER
 // =======================
-app.listen(process.env.PORT || 8080, async () => {
-  console.log("🚀 Server running (webhook mode)");
-
-  try {
-    const webhookUrl = `${BASE_URL}/webhook`;
-
-    await fetch(
-      `https://api.telegram.org/bot${TOKEN}/setWebhook?url=${webhookUrl}`
-    );
-
-    console.log("🔗 Webhook set:", webhookUrl);
-  } catch (err) {
-    console.error("❌ Webhook error:", err.message);
-  }
+app.listen(process.env.PORT || 8080, () => {
+  console.log("🚀 Server running");
 });
