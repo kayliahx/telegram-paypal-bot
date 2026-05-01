@@ -15,7 +15,20 @@ const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
 
 // ================== TELEGRAM ==================
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const bot = new TelegramBot(BOT_TOKEN);
+
+// 🔥 IMPORTANT: replace with your Railway URL
+const WEBHOOK_URL = `https://perceptive-empathy-production-18c6.up.railway.app/telegram-webhook/${BOT_TOKEN}`;
+
+// Set Telegram webhook
+await bot.setWebHook(WEBHOOK_URL);
+console.log("📡 Telegram webhook set:", WEBHOOK_URL);
+
+// Telegram webhook endpoint
+app.post(`/telegram-webhook/${BOT_TOKEN}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
 
 // ================== DB ==================
 const pool = new Pool({
@@ -23,7 +36,6 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// ✅ CLEAN TABLE STRUCTURE (NO MORE ERRORS)
 await pool.query(`
   CREATE TABLE IF NOT EXISTS users (
     id BIGINT PRIMARY KEY,
@@ -32,14 +44,16 @@ await pool.query(`
   )
 `);
 
-// ================== PAYPAL TOKEN ==================
+// ================== PAYPAL ==================
 async function getAccessToken() {
   const res = await fetch("https://api-m.paypal.com/v1/oauth2/token", {
     method: "POST",
     headers: {
       Authorization:
         "Basic " +
-        Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`).toString("base64"),
+        Buffer.from(
+          `${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`
+        ).toString("base64"),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: "grant_type=client_credentials",
@@ -49,7 +63,6 @@ async function getAccessToken() {
   return data.access_token;
 }
 
-// ================== CREATE ORDER ==================
 async function createOrder(userId) {
   const accessToken = await getAccessToken();
 
@@ -85,14 +98,13 @@ async function createOrder(userId) {
   return data.links.find((l) => l.rel === "approve").href;
 }
 
-// ================== COMMANDS ==================
+// ================== TELEGRAM COMMANDS ==================
 
 bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
 
   await pool.query(
-    `INSERT INTO users (id, has_access)
-     VALUES ($1, false)
+    `INSERT INTO users (id) VALUES ($1)
      ON CONFLICT (id) DO NOTHING`,
     [chatId]
   );
@@ -120,12 +132,12 @@ bot.onText(/\/buy/, async (msg) => {
 bot.onText(/\/status/, async (msg) => {
   const chatId = msg.chat.id;
 
-  const res = await pool.query(
+  const result = await pool.query(
     `SELECT has_access FROM users WHERE id=$1`,
     [chatId]
   );
 
-  if (res.rows.length && res.rows[0].has_access) {
+  if (result.rows.length && result.rows[0].has_access) {
     await bot.sendMessage(chatId, "✅ You have access");
   } else {
     await bot.sendMessage(chatId, "❌ No active access");
