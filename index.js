@@ -14,8 +14,8 @@ const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-// ✅ FIXED: enable polling
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+// ================== TELEGRAM ==================
+const bot = new TelegramBot(BOT_TOKEN);
 
 // ================== DB ==================
 const pool = new Pool({
@@ -23,16 +23,19 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// ✅ FIXED: safe async init (prevents crash)
-(async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS users (
-      id BIGINT PRIMARY KEY,
-      has_access BOOLEAN DEFAULT false,
-      created_at TIMESTAMP DEFAULT NOW()
-    )
-  `);
-})();
+// Create table (without has_access initially)
+await pool.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id BIGINT PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT NOW()
+  )
+`);
+
+// Ensure column exists (FIX FOR YOUR ERROR)
+await pool.query(`
+  ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS has_access BOOLEAN DEFAULT false;
+`);
 
 // ================== PAYPAL TOKEN ==================
 async function getAccessToken() {
@@ -41,9 +44,7 @@ async function getAccessToken() {
     headers: {
       Authorization:
         "Basic " +
-        Buffer.from(
-          `${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`
-        ).toString("base64"),
+        Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`).toString("base64"),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body: "grant_type=client_credentials",
@@ -73,7 +74,7 @@ async function createOrder(userId) {
               currency_code: "EUR",
               value: "0.50",
             },
-            custom_id: String(userId),
+            custom_id: String(userId), // 🔥 IMPORTANT
           },
         ],
         application_context: {
@@ -123,19 +124,19 @@ bot.onText(/\/buy/, async (msg) => {
 bot.onText(/\/status/, async (msg) => {
   const chatId = msg.chat.id;
 
-  const result = await pool.query(
+  const res = await pool.query(
     `SELECT has_access FROM users WHERE id=$1`,
     [chatId]
   );
 
-  if (result.rows.length && result.rows[0].has_access) {
+  if (res.rows.length && res.rows[0].has_access) {
     await bot.sendMessage(chatId, "✅ You have access");
   } else {
     await bot.sendMessage(chatId, "❌ No active access");
   }
 });
 
-// ================== WEBHOOK ==================
+// ================== PAYPAL WEBHOOK ==================
 
 app.post("/paypal-webhook", async (req, res) => {
   console.log("💰 PayPal webhook received");
@@ -147,22 +148,15 @@ app.post("/paypal-webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // ✅ FIXED: correct location of userId
     const userId =
-      event.resource?.purchase_units?.[0]?.custom_id;
+      event.resource?.custom_id ||
+      event.resource?.supplementary_data?.related_ids?.order_id;
 
-    if (!userId) {
-      console.log("❌ No userId in purchase_units");
-      console.log(JSON.stringify(event.resource, null, 2));
+    if (!userId || !/^\d+$/.test(userId)) {
+      console.log("❌ Invalid or missing userId");
       return res.sendStatus(200);
     }
 
-    if (!/^\d+$/.test(userId)) {
-      console.log("❌ Invalid userId format:", userId);
-      return res.sendStatus(200);
-    }
-
-    // ================== SAVE ACCESS ==================
     await pool.query(
       `INSERT INTO users (id, has_access)
        VALUES ($1, true)
@@ -171,12 +165,10 @@ app.post("/paypal-webhook", async (req, res) => {
       [userId]
     );
 
-    // ================== CREATE INVITE ==================
     const inviteLink = await bot.createChatInviteLink(CHANNEL_ID, {
       member_limit: 1,
     });
 
-    // ================== SEND ACCESS ==================
     await bot.sendMessage(
       userId,
       `🎉 Payment received!
@@ -196,7 +188,7 @@ ${inviteLink.invite_link}`
 
 // ================== SERVER ==================
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, () => {
   console.log("🚀 Server running on port", PORT);
