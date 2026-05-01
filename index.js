@@ -7,7 +7,7 @@ const TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 const BASE_URL = "https://perceptive-empathy-production-18c6.up.railway.app";
 
-const bot = new TelegramBot(TOKEN); // ❌ NO POLLING
+const bot = new TelegramBot(TOKEN); // ✅ NO POLLING
 const app = express();
 
 app.use(express.json());
@@ -15,12 +15,21 @@ app.use(express.json());
 const users = new Map();
 
 // =======================
-// WEBHOOK ROUTE
+// ✅ WEBHOOK ROUTE (FIXED)
 // =======================
-app.post(`/bot${TOKEN}`, (req, res) => {
-  console.log("📩 Update received");
+app.post("/webhook", (req, res) => {
+  console.log("📩 Update received:", JSON.stringify(req.body));
+
   bot.processUpdate(req.body);
+
   res.sendStatus(200);
+});
+
+// =======================
+// DEBUG LISTENER
+// =======================
+bot.on("message", (msg) => {
+  console.log("📨 Message:", msg.text);
 });
 
 // =======================
@@ -180,7 +189,7 @@ async function createOrder(userId) {
 }
 
 // =======================
-// SUCCESS (CAPTURE PAYMENT)
+// SUCCESS (CAPTURE)
 // =======================
 app.get("/success", async (req, res) => {
   try {
@@ -203,14 +212,13 @@ app.get("/success", async (req, res) => {
 
     const data = await captureRes.json();
 
-    console.log("💰 Capture response:", JSON.stringify(data));
+    console.log("💰 Capture:", JSON.stringify(data));
 
     const userId = Number(
       data.purchase_units[0].payments.captures[0].custom_id ||
       data.purchase_units[0].custom_id
     );
 
-    // ACCESS TIME (CHANGE HERE)
     const duration = 5 * 60 * 1000;
     const expiry = Date.now() + duration;
 
@@ -242,7 +250,7 @@ app.get("/cancel", (req, res) => {
 });
 
 // =======================
-// RENEWAL REMINDER (1 MIN BEFORE END)
+// RENEWAL REMINDER
 // =======================
 setInterval(async () => {
   const now = Date.now();
@@ -286,7 +294,7 @@ app.listen(process.env.PORT || 8080, async () => {
   console.log("🚀 Server running (webhook mode)");
 
   try {
-    const webhookUrl = `${BASE_URL}/bot${TOKEN}`;
+    const webhookUrl = `${BASE_URL}/webhook`;
 
     await fetch(
       `https://api.telegram.org/bot${TOKEN}/setWebhook?url=${webhookUrl}`
