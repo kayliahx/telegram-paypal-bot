@@ -1,7 +1,6 @@
 import express from "express";
 import TelegramBot from "node-telegram-bot-api";
 import pkg from "pg";
-import fetch from "node-fetch";
 
 const { Pool } = pkg;
 
@@ -15,7 +14,8 @@ const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
 
-const bot = new TelegramBot(BOT_TOKEN);
+// ✅ FIXED: enable polling
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // ================== DB ==================
 const pool = new Pool({
@@ -23,13 +23,16 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-await pool.query(`
-  CREATE TABLE IF NOT EXISTS users (
-    id BIGINT PRIMARY KEY,
-    has_access BOOLEAN DEFAULT false,
-    created_at TIMESTAMP DEFAULT NOW()
-  )
-`);
+// ✅ FIXED: safe async init (prevents crash)
+(async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id BIGINT PRIMARY KEY,
+      has_access BOOLEAN DEFAULT false,
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+})();
 
 // ================== PAYPAL TOKEN ==================
 async function getAccessToken() {
@@ -70,7 +73,7 @@ async function createOrder(userId) {
               currency_code: "EUR",
               value: "0.50",
             },
-            custom_id: String(userId), // 🔥 important
+            custom_id: String(userId),
           },
         ],
         application_context: {
@@ -144,13 +147,13 @@ app.post("/paypal-webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // 🔥 FIXED USER ID EXTRACTION
+    // ✅ FIXED: correct location of userId
     const userId =
       event.resource?.purchase_units?.[0]?.custom_id;
 
     if (!userId) {
       console.log("❌ No userId in purchase_units");
-      console.log(JSON.stringify(event.resource, null, 2)); // debug
+      console.log(JSON.stringify(event.resource, null, 2));
       return res.sendStatus(200);
     }
 
