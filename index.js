@@ -34,6 +34,14 @@ bot.onText(/\/start/, (msg) => {
 bot.on("callback_query", async (query) => {
   const userId = query.from.id;
 
+  // 🔒 Prevent double payment
+  if (users.has(userId) && Date.now() < users.get(userId)) {
+    return bot.sendMessage(
+      query.message.chat.id,
+      "✅ You already have active access."
+    );
+  }
+
   if (query.data === "buy_access") {
     const url = await createOrder(userId);
 
@@ -51,6 +59,14 @@ bot.on("callback_query", async (query) => {
 // =======================
 bot.onText(/\/buy/, async (msg) => {
   const userId = msg.from.id;
+
+  // 🔒 Prevent double payment
+  if (users.has(userId) && Date.now() < users.get(userId)) {
+    return bot.sendMessage(
+      msg.chat.id,
+      "✅ You already have active access."
+    );
+  }
 
   const url = await createOrder(userId);
 
@@ -125,7 +141,7 @@ async function createOrder(userId) {
             custom_id: String(userId),
             amount: {
               currency_code: "EUR",
-              value: "1.00",
+              value: "1.00", // 💰 CHANGE PRICE HERE
             },
           },
         ],
@@ -142,7 +158,7 @@ async function createOrder(userId) {
 }
 
 // =======================
-// SUCCESS (CAPTURE PAYMENT)
+// SUCCESS (CAPTURE)
 // =======================
 app.get("/success", async (req, res) => {
   try {
@@ -163,14 +179,11 @@ app.get("/success", async (req, res) => {
 
     const data = await captureRes.json();
 
-    const userId = Number(
-      data.purchase_units[0].payments.captures[0].custom_id ||
-      data.purchase_units[0].custom_id
-    );
+    const userId = Number(data.purchase_units[0].custom_id);
 
-    console.log("💰 Captured payment from:", userId);
+    console.log("💰 Payment from:", userId);
 
-    const duration = 5 * 60 * 1000;
+    const duration = 5 * 60 * 1000; // ⏱ CHANGE TIME HERE
     const expiry = Date.now() + duration;
 
     users.set(userId, expiry);
@@ -198,21 +211,6 @@ app.get("/success", async (req, res) => {
 // =======================
 app.get("/cancel", (req, res) => {
   res.send("❌ Payment cancelled.");
-});
-
-// =======================
-// WEBHOOK (BACKUP)
-// =======================
-app.post("/paypal-webhook", async (req, res) => {
-  const event = req.body;
-
-  console.log("📩 Webhook:", event.event_type);
-
-  if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
-    console.log("Webhook backup triggered");
-  }
-
-  res.sendStatus(200);
 });
 
 // =======================
