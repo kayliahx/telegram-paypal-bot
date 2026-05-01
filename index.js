@@ -62,13 +62,9 @@ async function setUser(userId, expiry) {
 // ===== TELEGRAM WEBHOOK =====
 app.post("/webhook", async (req, res) => {
   try {
-    console.log("📩 Update received");
-
     const update = req.body;
 
-    if (!update.message) {
-      return res.sendStatus(200);
-    }
+    if (!update.message) return res.sendStatus(200);
 
     const msg = update.message;
     const chatId = msg.chat.id;
@@ -83,7 +79,6 @@ app.post("/webhook", async (req, res) => {
 
     if (!text) return res.sendStatus(200);
 
-    // ===== COMMANDS =====
     switch (text) {
       case "/start":
         await bot.sendMessage(
@@ -92,12 +87,16 @@ app.post("/webhook", async (req, res) => {
         );
         break;
 
-      case "/buy":
+      case "/buy": {
+        // 💰 DYNAMIC PAYMENT LINK
+        const dynamicLink = `${PAYPAL_LINK}?custom_id=${userId}`;
+
         await bot.sendMessage(
           chatId,
-          `💳 Pay here:\n${PAYPAL_LINK}`
+          `💳 Pay securely:\n${dynamicLink}`
         );
         break;
+      }
 
       case "/status": {
         const user = await getUser(userId);
@@ -177,7 +176,7 @@ app.post("/paypal-webhook", async (req, res) => {
     if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
       const paymentId = event.resource.id;
 
-      // 🔁 Anti-duplicate
+      // 🔁 Prevent duplicate payments
       const existing = await pool.query(
         "SELECT * FROM payments WHERE id = $1",
         [paymentId]
@@ -193,13 +192,24 @@ app.post("/paypal-webhook", async (req, res) => {
         [paymentId]
       );
 
-      const userId = event.resource.custom_id;
+      // 🧠 SAFE USER ID EXTRACTION
+      const userId =
+        event.resource.custom_id ||
+        event.resource.invoice_id ||
+        event.resource.note;
 
       if (!userId) {
-        console.log("❌ Missing userId in PayPal");
+        console.log("❌ No userId found in payment");
         return res.sendStatus(200);
       }
 
+      // 🛡️ VALIDATE USER ID
+      if (!/^\d+$/.test(userId)) {
+        console.log("❌ Invalid userId format");
+        return res.sendStatus(200);
+      }
+
+      // ⏳ Grant access (24h)
       const expiry = Date.now() + 24 * 60 * 60 * 1000;
 
       await setUser(userId, expiry);
