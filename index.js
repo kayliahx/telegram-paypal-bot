@@ -15,7 +15,6 @@ const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
 
 // ================== TELEGRAM ==================
-// ✅ FIX: polling enabled
 const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // ================== DB ==================
@@ -24,18 +23,13 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// Create table
+// ✅ CLEAN TABLE STRUCTURE (NO MORE ERRORS)
 await pool.query(`
   CREATE TABLE IF NOT EXISTS users (
     id BIGINT PRIMARY KEY,
+    has_access BOOLEAN DEFAULT false,
     created_at TIMESTAMP DEFAULT NOW()
   )
-`);
-
-// Ensure column exists (fix crash)
-await pool.query(`
-  ALTER TABLE users
-  ADD COLUMN IF NOT EXISTS has_access BOOLEAN DEFAULT false;
 `);
 
 // ================== PAYPAL TOKEN ==================
@@ -97,7 +91,8 @@ bot.onText(/\/start/, async (msg) => {
   const chatId = msg.chat.id;
 
   await pool.query(
-    `INSERT INTO users (id) VALUES ($1)
+    `INSERT INTO users (id, has_access)
+     VALUES ($1, false)
      ON CONFLICT (id) DO NOTHING`,
     [chatId]
   );
