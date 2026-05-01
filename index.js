@@ -3,30 +3,31 @@ const express = require("express");
 
 const fetch = global.fetch;
 
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
-const app = express();
-app.use(express.json());
-
+const TOKEN = process.env.BOT_TOKEN;
 const CHANNEL_ID = process.env.CHANNEL_ID;
+const BASE_URL = "https://perceptive-empathy-production-18c6.up.railway.app";
+
+const bot = new TelegramBot(TOKEN); // ❌ NO POLLING
+const app = express();
+
+app.use(express.json());
 
 const users = new Map();
 
 // =======================
-// GLOBAL LOGGING
+// WEBHOOK ROUTE
 // =======================
-bot.on("message", (msg) => {
-  console.log("📩 MESSAGE:", {
-    text: msg.text,
-    user: msg.from.id,
-    username: msg.from.username,
-  });
+app.post(`/bot${TOKEN}`, (req, res) => {
+  console.log("📩 Update received");
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
 });
 
 // =======================
 // START COMMAND
 // =======================
 bot.onText(/\/start/, (msg) => {
-  console.log("🚀 /start triggered by", msg.from.id);
+  console.log("👤 /start from:", msg.from.id);
 
   bot.sendMessage(
     msg.chat.id,
@@ -46,21 +47,19 @@ bot.onText(/\/start/, (msg) => {
 // =======================
 bot.on("callback_query", async (query) => {
   const userId = query.from.id;
-  console.log("🖱 BUTTON CLICK:", query.data, "from", userId);
+
+  console.log("🖱 Button clicked:", userId);
 
   if (query.data === "buy_access") {
     try {
       const url = await createOrder(userId);
-
-      console.log("💳 Order created for", userId);
-      console.log("🔗 Approval URL:", url);
 
       bot.sendMessage(
         query.message.chat.id,
         `💳 Complete your payment:\n${url}`
       );
     } catch (err) {
-      console.error("❌ Order creation error:", err.message);
+      console.error("❌ Order error:", err.message);
       bot.sendMessage(query.message.chat.id, "❌ Payment error.");
     }
   }
@@ -73,12 +72,10 @@ bot.on("callback_query", async (query) => {
 // =======================
 bot.onText(/\/buy/, async (msg) => {
   const userId = msg.from.id;
-  console.log("💳 /buy command from", userId);
 
-  // 🔥 Prevent double payment
+  console.log("💰 /buy from:", userId);
+
   if (users.has(userId) && Date.now() < users.get(userId)) {
-    console.log("⚠️ User already has access:", userId);
-
     return bot.sendMessage(
       msg.chat.id,
       "✅ You already have active access."
@@ -88,15 +85,12 @@ bot.onText(/\/buy/, async (msg) => {
   try {
     const url = await createOrder(userId);
 
-    console.log("💳 Order created for", userId);
-    console.log("🔗 Approval URL:", url);
-
     bot.sendMessage(
       msg.chat.id,
       `💳 Complete your payment:\n${url}`
     );
   } catch (err) {
-    console.error("❌ /buy error:", err.message);
+    console.error("❌ Order error:", err.message);
     bot.sendMessage(msg.chat.id, "❌ Payment error.");
   }
 });
@@ -105,7 +99,6 @@ bot.onText(/\/buy/, async (msg) => {
 // ID COMMAND
 // =======================
 bot.onText(/\/id/, (msg) => {
-  console.log("🆔 /id requested by", msg.from.id);
   bot.sendMessage(msg.chat.id, `🆔 Your ID: ${msg.from.id}`);
 });
 
@@ -114,18 +107,14 @@ bot.onText(/\/id/, (msg) => {
 // =======================
 bot.onText(/\/access/, (msg) => {
   const userId = msg.from.id;
-  console.log("🔐 /access check for", userId);
 
   if (!users.has(userId) || Date.now() > users.get(userId)) {
-    console.log("❌ No access:", userId);
-
     return bot.sendMessage(
       msg.chat.id,
       "❌ You must purchase first.\nUse /buy"
     );
   }
 
-  console.log("✅ Access valid for", userId);
   bot.sendMessage(msg.chat.id, "✅ You already have access.");
 });
 
@@ -133,8 +122,6 @@ bot.onText(/\/access/, (msg) => {
 // PAYPAL TOKEN
 // =======================
 async function getAccessToken() {
-  console.log("🔑 Getting PayPal token...");
-
   const res = await fetch("https://api-m.paypal.com/v1/oauth2/token", {
     method: "POST",
     headers: {
@@ -149,9 +136,6 @@ async function getAccessToken() {
   });
 
   const data = await res.json();
-
-  console.log("🔑 PayPal token received");
-
   return data.access_token;
 }
 
@@ -159,8 +143,6 @@ async function getAccessToken() {
 // CREATE ORDER
 // =======================
 async function createOrder(userId) {
-  console.log("🧾 Creating order for", userId);
-
   const token = await getAccessToken();
 
   const res = await fetch(
@@ -183,10 +165,8 @@ async function createOrder(userId) {
           },
         ],
         application_context: {
-          return_url:
-            "https://perceptive-empathy-production-18c6.up.railway.app/success",
-          cancel_url:
-            "https://perceptive-empathy-production-18c6.up.railway.app/cancel",
+          return_url: `${BASE_URL}/success`,
+          cancel_url: `${BASE_URL}/cancel`,
         },
       }),
     }
@@ -194,23 +174,19 @@ async function createOrder(userId) {
 
   const data = await res.json();
 
-  if (!data.links) {
-    console.error("❌ PayPal order error:", data);
-    throw new Error("Order creation failed");
-  }
+  console.log("🧾 Order created:", data.id);
 
   return data.links.find((l) => l.rel === "approve").href;
 }
 
 // =======================
-// SUCCESS (CAPTURE)
+// SUCCESS (CAPTURE PAYMENT)
 // =======================
 app.get("/success", async (req, res) => {
-  console.log("✅ SUCCESS route triggered");
-
   try {
     const orderID = req.query.token;
-    console.log("🔎 Order ID:", orderID);
+
+    console.log("✅ Payment success hit:", orderID);
 
     const token = await getAccessToken();
 
@@ -227,16 +203,14 @@ app.get("/success", async (req, res) => {
 
     const data = await captureRes.json();
 
-    console.log("💰 Capture response:", JSON.stringify(data, null, 2));
+    console.log("💰 Capture response:", JSON.stringify(data));
 
     const userId = Number(
       data.purchase_units[0].payments.captures[0].custom_id ||
       data.purchase_units[0].custom_id
     );
 
-    console.log("💰 Payment confirmed for user:", userId);
-
-    // ACCESS
+    // ACCESS TIME (CHANGE HERE)
     const duration = 5 * 60 * 1000;
     const expiry = Date.now() + duration;
 
@@ -253,8 +227,6 @@ app.get("/success", async (req, res) => {
       `✅ Payment successful!\n\nJoin here:\n${invite.invite_link}`
     );
 
-    console.log("✅ Access granted:", userId);
-
     res.send("✅ Payment successful! You can return to Telegram.");
   } catch (err) {
     console.error("❌ Capture error:", err.message);
@@ -266,9 +238,26 @@ app.get("/success", async (req, res) => {
 // CANCEL
 // =======================
 app.get("/cancel", (req, res) => {
-  console.log("❌ Payment cancelled");
   res.send("❌ Payment cancelled.");
 });
+
+// =======================
+// RENEWAL REMINDER (1 MIN BEFORE END)
+// =======================
+setInterval(async () => {
+  const now = Date.now();
+
+  for (const [userId, expiry] of users.entries()) {
+    if (expiry - now < 60000 && expiry - now > 30000) {
+      try {
+        await bot.sendMessage(
+          userId,
+          "⚠️ Your access expires soon.\nUse /buy to renew."
+        );
+      } catch {}
+    }
+  }
+}, 30000);
 
 // =======================
 // AUTO KICK
@@ -282,7 +271,7 @@ setInterval(async () => {
         await bot.banChatMember(CHANNEL_ID, userId);
         users.delete(userId);
 
-        console.log("⛔ User removed:", userId);
+        console.log("⛔ Removed:", userId);
       } catch (err) {
         console.log("Kick error:", err.message);
       }
@@ -291,8 +280,20 @@ setInterval(async () => {
 }, 30000);
 
 // =======================
-// SERVER
+// START SERVER + SET WEBHOOK
 // =======================
-app.listen(process.env.PORT || 8080, () => {
-  console.log("🚀 Server running");
+app.listen(process.env.PORT || 8080, async () => {
+  console.log("🚀 Server running (webhook mode)");
+
+  try {
+    const webhookUrl = `${BASE_URL}/bot${TOKEN}`;
+
+    await fetch(
+      `https://api.telegram.org/bot${TOKEN}/setWebhook?url=${webhookUrl}`
+    );
+
+    console.log("🔗 Webhook set:", webhookUrl);
+  } catch (err) {
+    console.error("❌ Webhook error:", err.message);
+  }
 });
