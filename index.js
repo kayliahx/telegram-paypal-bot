@@ -15,7 +15,8 @@ const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
 const DATABASE_URL = process.env.DATABASE_URL;
 
 // ================== TELEGRAM ==================
-const bot = new TelegramBot(BOT_TOKEN);
+// ✅ FIX: polling enabled
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 // ================== DB ==================
 const pool = new Pool({
@@ -23,7 +24,7 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false },
 });
 
-// Create table (without has_access initially)
+// Create table
 await pool.query(`
   CREATE TABLE IF NOT EXISTS users (
     id BIGINT PRIMARY KEY,
@@ -31,7 +32,7 @@ await pool.query(`
   )
 `);
 
-// Ensure column exists (FIX FOR YOUR ERROR)
+// Ensure column exists (fix crash)
 await pool.query(`
   ALTER TABLE users
   ADD COLUMN IF NOT EXISTS has_access BOOLEAN DEFAULT false;
@@ -74,7 +75,7 @@ async function createOrder(userId) {
               currency_code: "EUR",
               value: "0.50",
             },
-            custom_id: String(userId), // 🔥 IMPORTANT
+            custom_id: String(userId),
           },
         ],
         application_context: {
