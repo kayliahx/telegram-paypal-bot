@@ -3,8 +3,13 @@ import express from 'express';
 import pkg from 'pg';
 const { Pool } = pkg;
 
-const bot = new TelegramBot(process.env.BOT_TOKEN);
 const app = express();
+app.use(express.json());
+
+// =====================
+// BOT
+// =====================
+const bot = new TelegramBot(process.env.BOT_TOKEN);
 
 // =====================
 // DATABASE
@@ -15,7 +20,7 @@ const pool = new Pool({
 });
 
 // =====================
-// SERVER (Railway needs it)
+// SERVER (Railway)
 // =====================
 app.get('/', (req, res) => {
   res.send('Bot running');
@@ -50,12 +55,16 @@ function parseDuration(input) {
 // ENSURE USER EXISTS
 // =====================
 async function ensureUser(userId) {
-  await pool.query(
-    `INSERT INTO users (user_id, has_access, expires_at)
-     VALUES ($1, false, 0)
-     ON CONFLICT (user_id) DO NOTHING`,
-    [userId]
-  );
+  try {
+    await pool.query(
+      `INSERT INTO users (user_id, has_access, expires_at)
+       VALUES ($1, false, 0)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userId]
+    );
+  } catch (err) {
+    console.error('ensureUser error:', err);
+  }
 }
 
 // =====================
@@ -66,11 +75,11 @@ bot.onText(/\/start/, async (msg) => {
 
   await ensureUser(userId);
 
-  bot.sendMessage(userId, `👋 Welcome!\n\nUse /buy 5m or /buy 1h etc.`);
+  bot.sendMessage(userId, `👋 Welcome!\n\nUse /buy 5m or /buy 1h`);
 });
 
 // =====================
-// BUY (TEST MODE)
+// BUY (TEST)
 // =====================
 bot.onText(/\/buy (.+)/, async (msg, match) => {
   const userId = msg.from.id;
@@ -84,15 +93,20 @@ bot.onText(/\/buy (.+)/, async (msg, match) => {
 
   await ensureUser(userId);
 
-  await pool.query(
-    `UPDATE users
-     SET has_access = true,
-         expires_at = $1
-     WHERE user_id = $2`,
-    [expiresAt, userId]
-  );
+  try {
+    await pool.query(
+      `UPDATE users
+       SET has_access = true,
+           expires_at = $1
+       WHERE user_id = $2`,
+      [expiresAt, userId]
+    );
 
-  bot.sendMessage(userId, `✅ Access granted for ${durationInput}`);
+    bot.sendMessage(userId, `✅ Access granted for ${durationInput}`);
+  } catch (err) {
+    console.error(err);
+    bot.sendMessage(userId, `❌ Error granting access`);
+  }
 });
 
 // =====================
@@ -103,32 +117,38 @@ bot.onText(/\/status/, async (msg) => {
 
   await ensureUser(userId);
 
-  const result = await pool.query(
-    `SELECT has_access, expires_at
-     FROM users
-     WHERE user_id = $1`,
-    [userId]
-  );
+  try {
+    const result = await pool.query(
+      `SELECT has_access, expires_at
+       FROM users
+       WHERE user_id = $1`,
+      [userId]
+    );
 
-  const user = result.rows[0];
+    const user = result.rows[0];
 
-  if (!user.has_access) {
-    return bot.sendMessage(userId, `❌ No active access`);
+    if (!user.has_access) {
+      return bot.sendMessage(userId, `❌ No active access`);
+    }
+
+    const remaining = user.expires_at - Date.now();
+
+    if (remaining <= 0) {
+      return bot.sendMessage(userId, `⛔ Expired`);
+    }
+
+    const minutes = Math.floor(remaining / 60000);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+
+    bot.sendMessage(
+      userId,
+      `✅ Active\n⏳ Remaining: ${days}d ${hours % 24}h ${minutes % 60}m`
+    );
+  } catch (err) {
+    console.error(err);
+    bot.sendMessage(userId, `❌ Error fetching status`);
   }
-
-  const remaining = user.expires_at - Date.now();
-
-  if (remaining <= 0) {
-    return bot.sendMessage(userId, `⛔ Expired`);
-  }
-
-  const minutes = Math.floor(remaining / 60000);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-
-  bot.sendMessage(userId,
-    `✅ Active\n⏳ Remaining: ${days}d ${hours % 24}h ${minutes % 60}m`
-  );
 });
 
 // =====================
@@ -154,20 +174,24 @@ setInterval(async () => {
 
       bot.sendMessage(user.user_id, `⛔ Your access expired`);
     }
-
   } catch (err) {
-    console.error('Expiry check error:', err);
+    console.error('Expiry error:', err);
   }
-}, 60000); // runs every 1 min (NO spam)
+}, 60000);
 
 // =====================
-// WEBHOOK (Railway)
+// WEBHOOK (FIXED)
 // =====================
 const url = process.env.RAILWAY_STATIC_URL;
 
 if (url) {
   bot.setWebHook(`${url}/bot${process.env.BOT_TOKEN}`);
-  app.use(bot.webHookCallback(`/bot${process.env.BOT_TOKEN}`));
+
+  app.post(`/bot${process.env.BOT_TOKEN}`, (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
+  });
+
   console.log('✅ Webhook set');
 } else {
   bot.startPolling();
