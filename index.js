@@ -10,11 +10,18 @@ app.use(express.json());
 const TOKEN = process.env.BOT_TOKEN;
 const PORT = process.env.PORT || 8080;
 const ADMIN_ID = process.env.ADMIN_ID;
+
+// 🔥 YOUR PAYPAL LINK
 const PAYMENT_LINK = "https://www.paypal.com/ncp/payment/GTK5FEXNGNBDU";
 
-// Safety check
+// 🔥 YOUR PRIVATE CHANNEL LINK (PUT YOUR REAL ONE)
+const CHANNEL_LINK = "https://t.me/+YOUR_PRIVATE_LINK";
+
+// ==============================
+// SAFETY CHECK
+// ==============================
 if (!TOKEN) {
-  console.error("❌ BOT_TOKEN is missing!");
+  console.error("❌ BOT_TOKEN missing");
   process.exit(1);
 }
 
@@ -26,7 +33,7 @@ console.log("✅ BOT TOKEN LOADED");
 const bot = new TelegramBot(TOKEN, { polling: false });
 
 // ==============================
-// DEBUG: LOG ALL REQUESTS
+// DEBUG LOGS
 // ==============================
 app.use((req, res, next) => {
   console.log("➡️ Incoming:", req.method, req.url);
@@ -34,7 +41,7 @@ app.use((req, res, next) => {
 });
 
 // ==============================
-// WEBHOOK ROUTE (FIXED)
+// TELEGRAM WEBHOOK
 // ==============================
 app.post(`/telegram-webhook/${TOKEN}`, (req, res) => {
   console.log("📩 Update received:", JSON.stringify(req.body));
@@ -42,21 +49,44 @@ app.post(`/telegram-webhook/${TOKEN}`, (req, res) => {
   try {
     bot.processUpdate(req.body);
     res.sendStatus(200);
-  } catch (error) {
-    console.error("❌ Webhook error:", error);
+  } catch (err) {
+    console.error("❌ Telegram webhook error:", err);
     res.sendStatus(200);
   }
 });
 
 // ==============================
-// HEALTH CHECK
+// PAYPAL WEBHOOK (FINAL FIX)
 // ==============================
-app.get("/", (req, res) => {
-  res.send("Bot is alive 🚀");
+app.post("/paypal-webhook", (req, res) => {
+  console.log("💰 FULL PAYPAL EVENT:", JSON.stringify(req.body, null, 2));
+
+  const event = req.body;
+
+  try {
+    if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
+      const email = event.resource?.payer?.email_address;
+
+      console.log("✅ PAYMENT DETECTED:", email);
+
+      // Notify admin
+      if (ADMIN_ID) {
+        bot.sendMessage(
+          ADMIN_ID,
+          `💰 Payment confirmed\nEmail: ${email || "unknown"}`
+        );
+      }
+    }
+
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("❌ PayPal webhook error:", err);
+    res.sendStatus(200);
+  }
 });
 
 // ==============================
-// START SERVER + SET WEBHOOK
+// START SERVER
 // ==============================
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
@@ -65,7 +95,7 @@ app.listen(PORT, async () => {
 
   try {
     await bot.setWebHook(webhookUrl);
-    console.log("✅ Webhook set:", webhookUrl);
+    console.log("✅ Telegram webhook set:", webhookUrl);
   } catch (err) {
     console.error("❌ Webhook setup error:", err);
   }
@@ -94,13 +124,10 @@ bot.onText(/\/start/, (msg) => {
 
 // HELP
 bot.onText(/\/help/, (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-    "Use /buy to purchase access."
-  );
+  bot.sendMessage(msg.chat.id, "Use /buy to purchase access.");
 });
 
-// BUY COMMAND
+// BUY
 bot.onText(/\/buy/, (msg) => {
   sendPayment(msg);
 });
@@ -139,11 +166,11 @@ function sendPayment(msg) {
     }
   );
 
-  // Notify admin
+  // Notify admin that user clicked buy
   if (ADMIN_ID) {
     bot.sendMessage(
       ADMIN_ID,
-      `💰 User clicked BUY\n\nUser ID: ${msg.from.id}\nUsername: @${msg.from.username || "N/A"}`
+      `🛒 User clicked BUY\nUser ID: ${msg.from.id}\nUsername: @${msg.from.username || "N/A"}`
     );
   }
 }
