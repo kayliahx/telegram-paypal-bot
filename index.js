@@ -17,33 +17,6 @@ const pool = new Pool({
 const PORT = process.env.PORT || 3000;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
-// ================= STATUS FUNCTION =================
-async function sendStatus(ctx) {
-  const userId = ctx.from.id;
-
-  const result = await pool.query(
-    "SELECT has_access, expires_at FROM users WHERE user_id = $1",
-    [userId]
-  );
-
-  if (result.rows.length === 0) {
-    return ctx.reply("❌ No subscription found.");
-  }
-
-  const { has_access, expires_at } = result.rows[0];
-  const now = Math.floor(Date.now() / 1000);
-
-  if (!has_access || expires_at < now) {
-    return ctx.reply("❌ Your access is not active.\n\nUse /buy to subscribe.");
-  }
-
-  const remaining = expires_at - now;
-  const days = Math.floor(remaining / 86400);
-  const hours = Math.floor((remaining % 86400) / 3600);
-
-  await ctx.reply(`✅ Subscription Active\n\n⏳ ${days} days ${hours} hours remaining`);
-}
-
 // ================= START =================
 bot.command("start", async (ctx) => {
   const userId = ctx.from.id;
@@ -53,22 +26,44 @@ bot.command("start", async (ctx) => {
     [userId]
   );
 
-  await ctx.reply("Welcome 🚀\n\nUse /buy to subscribe or check your status below:");
-  await sendStatus(ctx);
+  await ctx.reply("Welcome 🚀\n\nUse /access to check your subscription.");
 });
 
-// ================= ACCESS / STATUS =================
-bot.command("access", sendStatus);
-bot.command("status", sendStatus);
+// ================= ACCESS =================
+bot.command("access", async (ctx) => {
+  const userId = ctx.from.id;
+
+  const result = await pool.query(
+    "SELECT has_access, expires_at FROM users WHERE user_id = $1",
+    [userId]
+  );
+
+  if (result.rows.length === 0) {
+    return ctx.reply("❌ No data found.");
+  }
+
+  const { has_access, expires_at } = result.rows[0];
+  const now = Math.floor(Date.now() / 1000);
+
+  if (!has_access || expires_at < now) {
+    return ctx.reply("❌ Access expired or not active.");
+  }
+
+  const remaining = expires_at - now;
+  ctx.reply(`✅ Active\n⏳ Remaining: ${remaining}s`);
+});
 
 // ================= BUY =================
 bot.command("buy", async (ctx) => {
   const userId = ctx.from.id;
+
   const link = `${process.env.PAYPAL_LINK}?custom_id=${userId}`;
 
-  await ctx.reply("💰 Subscribe below:", {
+  await ctx.reply("💰 Click below to subscribe:", {
     reply_markup: {
-      inline_keyboard: [[{ text: "💰 Buy Access", url: link }]],
+      inline_keyboard: [
+        [{ text: "💰 Buy Access", url: link }]
+      ],
     },
   });
 });
@@ -88,20 +83,6 @@ app.post("/paypal-webhook", async (req, res) => {
       );
 
       console.log("✅ User activated:", userId);
-
-      // Send invite link automatically
-      try {
-        const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
-          member_limit: 1,
-        });
-
-        await bot.api.sendMessage(
-          userId,
-          `🎉 Payment successful!\n\nJoin your private channel:\n${invite.invite_link}`
-        );
-      } catch (err) {
-        console.error("Invite link error:", err.message);
-      }
     }
 
     res.sendStatus(200);
@@ -115,10 +96,15 @@ app.post("/paypal-webhook", async (req, res) => {
 await bot.init();
 
 app.use(`/bot${process.env.BOT_TOKEN}`, (req, res) => {
-  bot.handleUpdate(req.body, res);
+  bot.handleUpdate(req.body)
+    .then(() => res.sendStatus(200))
+    .catch((err) => {
+      console.error("Telegram webhook error:", err);
+      res.sendStatus(500);
+    });
 });
 
-// ================= AUTO KICK EXPIRED USERS =================
+// ================= AUTO KICK =================
 async function kickExpiredUsers() {
   try {
     const now = Math.floor(Date.now() / 1000);
@@ -135,7 +121,7 @@ async function kickExpiredUsers() {
         await bot.api.banChatMember(CHANNEL_ID, userId);
         await bot.api.unbanChatMember(CHANNEL_ID, userId);
 
-        console.log(`❌ Kicked expired user: ${userId}`);
+        console.log(`❌ Kicked: ${userId}`);
 
         await pool.query(
           "UPDATE users SET has_access = false WHERE user_id = $1",
@@ -143,9 +129,10 @@ async function kickExpiredUsers() {
         );
 
       } catch (err) {
-        console.error(`Kick failed for ${userId}:`, err.message);
+        console.error(`Kick failed ${userId}:`, err.message);
       }
     }
+
   } catch (err) {
     console.error("Auto-kick error:", err);
   }
@@ -153,7 +140,7 @@ async function kickExpiredUsers() {
 
 setInterval(kickExpiredUsers, 5 * 60 * 1000);
 
-// ================= START SERVER =================
+// ================= SERVER =================
 app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
 
@@ -161,5 +148,5 @@ app.listen(PORT, async () => {
 
   await bot.api.setWebhook(webhookUrl);
 
-  console.log("✅ Telegram webhook set:", webhookUrl);
+  console.log("✅ Webhook set:", webhookUrl);
 });
