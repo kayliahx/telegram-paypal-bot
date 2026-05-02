@@ -1,197 +1,241 @@
 import express from "express";
 import axios from "axios";
-import fs from "fs";
+import pkg from "pg";
+
+const { Pool } = pkg;
 
 const app = express();
 app.use(express.json());
 
+// ENV
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = process.env.ADMIN_ID;
 const CHANNEL_ID = process.env.CHANNEL_ID;
-const PORT = process.env.PORT || 8080;
+const DATABASE_URL = process.env.DATABASE_URL;
 
-// ===== STORAGE =====
-const DB_FILE = "./db.json";
+const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
-let db = {
-  pendingUsers: {},
-  activeUsers: {}
-};
+// DB
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
-if (fs.existsSync(DB_FILE)) {
-  db = JSON.parse(fs.readFileSync(DB_FILE));
-}
+// ======================
+// INIT DB
+// ======================
+await pool.query(`
+CREATE TABLE IF NOT EXISTS users (
+  user_id BIGINT PRIMARY KEY,
+  payment_id TEXT,
+  expires_at BIGINT
+);
+`);
 
-function saveDB() {
-  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-}
-
-// ===== TELEGRAM =====
-async function sendMessage(chatId, text, extra = {}) {
-  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+// ======================
+// HELPERS
+// ======================
+async function sendMessage(chatId, text, options = {}) {
+  await axios.post(`${TELEGRAM_API}/sendMessage`, {
     chat_id: chatId,
     text,
-    ...extra
+    ...options
   });
 }
 
-// ===== LOG =====
-function log(msg) {
-  console.log(msg);
+function formatTime(ms) {
+  const sec = Math.floor(ms / 1000);
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 }
 
-// ===== TELEGRAM WEBHOOK =====
+// ======================
+// TELEGRAM WEBHOOK
+// ======================
 app.post(`/telegram-webhook/${BOT_TOKEN}`, async (req, res) => {
+  res.sendStatus(200);
+
   const msg = req.body.message;
-  if (!msg) return res.sendStatus(200);
+  if (!msg) return;
 
-  const chatId = msg.chat.id;
-  const text = msg.text || "";
+  const userId = msg.from.id;
+  const text = msg.text;
 
-  log(`📩 ${chatId} → ${text}`);
+  console.log(`📩 ${userId} → ${text}`);
 
   // START
   if (text === "/start") {
-    await sendMessage(chatId, "Welcome 👋 Choose an option:", {
+    await sendMessage(userId, "Welcome!", {
       reply_markup: {
-        keyboard: [
-          ["💰 Buy Access"],
-          ["ℹ️ Help"]
-        ],
+        keyboard: [[{ text: "💰 Buy Access" }]],
         resize_keyboard: true
       }
     });
   }
 
-  // HELP
-  if (text === "ℹ️ Help") {
-    await sendMessage(chatId, "Use /buy to purchase access.");
+  // BUY
+  if (text === "💰 Buy Access") {
+    const paymentId = `user_${userId}_${Date.now()}`;
+
+    await pool.query(
+      `INSERT INTO users (user_id, payment_id)
+       VALUES ($1, $2)
+       ON CONFLICT (user_id)
+       DO UPDATE SET payment_id = $2`,
+      [userId, paymentId]
+    );
+
+    console.log(`🛒 BUY → ${userId}`);
+
+    const paymentLink = `https://your-payment-link.com?custom_id=${paymentId}`;
+
+    await sendMessage(userId, `💳 Pay here:\n${paymentLink}`);
   }
 
   // STATUS
   if (text === "/status") {
-    const user = db.activeUsers[chatId];
-    if (!user) {
-      return sendMessage(chatId, "❌ No active access.");
+    const { rows } = await pool.query(
+      `SELECT expires_at FROM users WHERE user_id=$1`,
+      [userId]
+    );
+
+    if (!rows.length || !rows[0].expires_at) {
+      await sendMessage(userId, "❌ No active access");
+      return;
     }
 
-    const remaining = Math.floor((user.expiresAt - Date.now()) / 1000);
-    return sendMessage(chatId, `✅ Active\n⏳ Remaining: ${remaining}s`);
+    const remaining = rows[0].expires_at - Date.now();
+
+    await sendMessage(
+      userId,
+      `✅ Active\n⏳ Remaining: ${formatTime(remaining)}`
+    );
   }
 
   // ACCESS
   if (text === "/access") {
-    if (!db.activeUsers[chatId]) {
-      return sendMessage(chatId, "❌ No access.");
-    }
-    return sendMessage(chatId, "✅ You already have access.");
-  }
-
-  // BUY
-  if (text === "💰 Buy Access" || text === "/buy") {
-    db.pendingUsers[chatId] = Date.now();
-    saveDB();
-
-    log(`🛒 BUY → ${chatId}`);
-
-    await sendMessage(chatId, "Click below to pay:", {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "Pay Now", url: "https://www.paypal.com/ncp/payment/GTK5FEXNGNBDU" }]
-        ]
-      }
-    });
-
-    await sendMessage(ADMIN_ID, `💰 BUY CLICK\nUser: ${chatId}`);
-  }
-
-  res.sendStatus(200);
-});
-
-// ===== PAYPAL WEBHOOK =====
-app.post("/paypal-webhook", async (req, res) => {
-  const event = req.body;
-
-  log("💰 PAYPAL EVENT");
-
-  if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
-    const now = Date.now();
-
-    const validUser = Object.entries(db.pendingUsers)
-      .filter(([id, time]) => now - time < 10 * 60 * 1000)
-      .sort((a, b) => b[1] - a[1])[0];
-
-    if (!validUser) {
-      log("❌ No matching user");
-      return res.sendStatus(200);
-    }
-
-    const chatId = validUser[0];
-
-    log(`✅ MATCH → ${chatId}`);
-
-    delete db.pendingUsers[chatId];
-
-    // CREATE INVITE LINK
-    const invite = await axios.post(
-      `https://api.telegram.org/bot${BOT_TOKEN}/createChatInviteLink`,
-      {
-        chat_id: CHANNEL_ID,
-        member_limit: 1,
-        expire_date: Math.floor(Date.now() / 1000) + 300 // 5 min
-      }
+    const { rows } = await pool.query(
+      `SELECT expires_at FROM users WHERE user_id=$1`,
+      [userId]
     );
 
-    const link = invite.data.result.invite_link;
+    if (!rows.length || rows[0].expires_at < Date.now()) {
+      await sendMessage(userId, "❌ Access expired");
+      return;
+    }
 
-    // SAVE ACCESS (1 MONTH)
-    const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
+    const linkRes = await axios.post(`${TELEGRAM_API}/createChatInviteLink`, {
+      chat_id: CHANNEL_ID,
+      member_limit: 1
+    });
 
-    db.activeUsers[chatId] = { expiresAt };
-    saveDB();
+    const link = linkRes.data.result.invite_link;
 
-    await sendMessage(chatId, `✅ Payment confirmed\n\nJoin here:\n${link}`);
-    await sendMessage(ADMIN_ID, `💰 PAYMENT OK\nUser: ${chatId}`);
+    await sendMessage(userId, `🔗 ${link}`);
   }
-
-  res.sendStatus(200);
 });
 
-// ===== AUTO REMOVE EXPIRED USERS =====
+// ======================
+// PAYPAL WEBHOOK
+// ======================
+app.post("/paypal-webhook", async (req, res) => {
+  res.sendStatus(200);
+
+  const event = req.body;
+
+  console.log("💰 PAYPAL EVENT");
+
+  const customId =
+    event?.resource?.custom_id ||
+    event?.resource?.purchase_units?.[0]?.custom_id;
+
+  if (!customId) {
+    console.log("❌ No custom_id");
+    return;
+  }
+
+  const { rows } = await pool.query(
+    `SELECT user_id FROM users WHERE payment_id=$1`,
+    [customId]
+  );
+
+  if (!rows.length) {
+    console.log("❌ No user match");
+    return;
+  }
+
+  const userId = rows[0].user_id;
+
+  console.log(`✅ MATCH → ${userId}`);
+
+  const ONE_MONTH = 30 * 24 * 60 * 60 * 1000;
+
+  await pool.query(
+    `UPDATE users SET expires_at=$1 WHERE user_id=$2`,
+    [Date.now() + ONE_MONTH, userId]
+  );
+
+  const linkRes = await axios.post(`${TELEGRAM_API}/createChatInviteLink`, {
+    chat_id: CHANNEL_ID,
+    member_limit: 1
+  });
+
+  const link = linkRes.data.result.invite_link;
+
+  await sendMessage(userId, `✅ Payment confirmed!\n🔗 ${link}`);
+});
+
+// ======================
+// AUTO KICK
+// ======================
 setInterval(async () => {
   const now = Date.now();
 
-  for (const chatId in db.activeUsers) {
-    if (db.activeUsers[chatId].expiresAt < now) {
+  const { rows } = await pool.query(`SELECT user_id, expires_at FROM users`);
+
+  for (const user of rows) {
+    if (user.expires_at && now > user.expires_at) {
       try {
-        await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/banChatMember`, {
+        await axios.post(`${TELEGRAM_API}/banChatMember`, {
           chat_id: CHANNEL_ID,
-          user_id: chatId
+          user_id: user.user_id
         });
 
-        await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/unbanChatMember`, {
+        await axios.post(`${TELEGRAM_API}/unbanChatMember`, {
           chat_id: CHANNEL_ID,
-          user_id: chatId
+          user_id: user.user_id
         });
 
-        log(`🚫 Removed ${chatId}`);
+        await pool.query(
+          `UPDATE users SET expires_at=NULL WHERE user_id=$1`,
+          [user.user_id]
+        );
 
-        delete db.activeUsers[chatId];
-        saveDB();
-      } catch (e) {
-        log("Kick error: " + (e.response?.data || e.message));
+        console.log(`⛔ Removed: ${user.user_id}`);
+      } catch (err) {
+        console.log("Kick error:", err.message);
       }
     }
   }
-}, 60000);
+}, 5 * 60 * 1000);
 
-// ===== START SERVER =====
+// ======================
+// START
+// ======================
+app.get("/", (req, res) => res.send("OK"));
+
+const PORT = process.env.PORT || 8080;
+
 app.listen(PORT, async () => {
-  log("🚀 Server running");
+  console.log("🚀 Server running");
 
-  await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
-    url: `https://${process.env.RAILWAY_STATIC_URL}/telegram-webhook/${BOT_TOKEN}`
+  await axios.post(`${TELEGRAM_API}/setWebhook`, {
+    url: `${process.env.RAILWAY_STATIC_URL}/telegram-webhook/${BOT_TOKEN}`
   });
 
-  log("✅ Telegram webhook set");
+  console.log("✅ Webhook set");
 });
