@@ -17,20 +17,8 @@ const pool = new Pool({
 const PORT = process.env.PORT || 3000;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
-// ================= START COMMAND =================
-bot.command("start", async (ctx) => {
-  const userId = ctx.from.id;
-
-  await pool.query(
-    "INSERT INTO users (user_id, has_access, expires_at) VALUES ($1, false, 0) ON CONFLICT (user_id) DO NOTHING",
-    [userId]
-  );
-
-  await ctx.reply("Welcome 🚀\n\nUse /access to check your subscription.");
-});
-
-// ================= ACCESS CHECK =================
-bot.command("access", async (ctx) => {
+// ================= STATUS FUNCTION =================
+async function sendStatus(ctx) {
   const userId = ctx.from.id;
 
   const result = await pool.query(
@@ -39,31 +27,48 @@ bot.command("access", async (ctx) => {
   );
 
   if (result.rows.length === 0) {
-    return ctx.reply("❌ No data found.");
+    return ctx.reply("❌ No subscription found.");
   }
 
   const { has_access, expires_at } = result.rows[0];
   const now = Math.floor(Date.now() / 1000);
 
   if (!has_access || expires_at < now) {
-    return ctx.reply("❌ Access expired or not active.");
+    return ctx.reply("❌ Your access is not active.\n\nUse /buy to subscribe.");
   }
 
   const remaining = expires_at - now;
-  ctx.reply(`✅ Active\n⏳ Remaining: ${remaining}s`);
+  const days = Math.floor(remaining / 86400);
+  const hours = Math.floor((remaining % 86400) / 3600);
+
+  await ctx.reply(`✅ Subscription Active\n\n⏳ ${days} days ${hours} hours remaining`);
+}
+
+// ================= START =================
+bot.command("start", async (ctx) => {
+  const userId = ctx.from.id;
+
+  await pool.query(
+    "INSERT INTO users (user_id, has_access, expires_at) VALUES ($1, false, 0) ON CONFLICT (user_id) DO NOTHING",
+    [userId]
+  );
+
+  await ctx.reply("Welcome 🚀\n\nUse /buy to subscribe or check your status below:");
+  await sendStatus(ctx);
 });
+
+// ================= ACCESS / STATUS =================
+bot.command("access", sendStatus);
+bot.command("status", sendStatus);
 
 // ================= BUY =================
 bot.command("buy", async (ctx) => {
   const userId = ctx.from.id;
-
   const link = `${process.env.PAYPAL_LINK}?custom_id=${userId}`;
 
-  await ctx.reply("💰 Click below to subscribe:", {
+  await ctx.reply("💰 Subscribe below:", {
     reply_markup: {
-      inline_keyboard: [
-        [{ text: "💰 Buy Access", url: link }]
-      ],
+      inline_keyboard: [[{ text: "💰 Buy Access", url: link }]],
     },
   });
 });
@@ -83,6 +88,20 @@ app.post("/paypal-webhook", async (req, res) => {
       );
 
       console.log("✅ User activated:", userId);
+
+      // Send invite link automatically
+      try {
+        const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
+          member_limit: 1,
+        });
+
+        await bot.api.sendMessage(
+          userId,
+          `🎉 Payment successful!\n\nJoin your private channel:\n${invite.invite_link}`
+        );
+      } catch (err) {
+        console.error("Invite link error:", err.message);
+      }
     }
 
     res.sendStatus(200);
@@ -93,14 +112,10 @@ app.post("/paypal-webhook", async (req, res) => {
 });
 
 // ================= TELEGRAM WEBHOOK =================
-app.use(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
-  try {
-    await bot.init();
-    await bot.handleUpdate(req.body, res);
-  } catch (err) {
-    console.error("Telegram webhook error:", err);
-    res.sendStatus(500);
-  }
+await bot.init();
+
+app.use(`/bot${process.env.BOT_TOKEN}`, (req, res) => {
+  bot.handleUpdate(req.body, res);
 });
 
 // ================= AUTO KICK EXPIRED USERS =================
@@ -131,7 +146,6 @@ async function kickExpiredUsers() {
         console.error(`Kick failed for ${userId}:`, err.message);
       }
     }
-
   } catch (err) {
     console.error("Auto-kick error:", err);
   }
