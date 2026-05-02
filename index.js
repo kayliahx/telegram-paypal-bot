@@ -1,7 +1,9 @@
-require("dotenv").config();
-const express = require("express");
-const axios = require("axios");
-const fs = require("fs");
+import dotenv from "dotenv";
+import express from "express";
+import axios from "axios";
+import fs from "fs";
+
+dotenv.config();
 
 const app = express();
 app.use(express.json());
@@ -9,7 +11,6 @@ app.use(express.json());
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
 const CHANNEL_ID = process.env.CHANNEL_ID;
-
 const PORT = process.env.PORT || 8080;
 
 // ===== STORAGE =====
@@ -37,7 +38,7 @@ async function sendMessage(chatId, text, extra = {}) {
   });
 }
 
-// ===== LOGS =====
+// ===== LOG =====
 function log(msg) {
   console.log(msg);
 }
@@ -86,7 +87,6 @@ app.post(`/telegram-webhook/${BOT_TOKEN}`, async (req, res) => {
     if (!db.activeUsers[chatId]) {
       return sendMessage(chatId, "❌ No access.");
     }
-
     return sendMessage(chatId, "✅ You already have access.");
   }
 
@@ -115,7 +115,7 @@ app.post(`/telegram-webhook/${BOT_TOKEN}`, async (req, res) => {
 app.post("/paypal-webhook", async (req, res) => {
   const event = req.body;
 
-  log("💰 PAYPAL EVENT RECEIVED");
+  log("💰 PAYPAL EVENT");
 
   if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
     const now = Date.now();
@@ -135,36 +135,32 @@ app.post("/paypal-webhook", async (req, res) => {
 
     delete db.pendingUsers[chatId];
 
-    // ===== CREATE INVITE =====
+    // CREATE INVITE
     const invite = await axios.post(
       `https://api.telegram.org/bot${BOT_TOKEN}/createChatInviteLink`,
       {
         chat_id: CHANNEL_ID,
         member_limit: 1,
-        expire_date: Math.floor(Date.now() / 1000) + 300 // 5 min to use link
+        expire_date: Math.floor(Date.now() / 1000) + 300 // 5 min
       }
     );
 
     const link = invite.data.result.invite_link;
 
-    // ===== SAVE ACCESS (1 month) =====
+    // SAVE ACCESS (1 month)
     const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
 
-    db.activeUsers[chatId] = {
-      expiresAt
-    };
-
+    db.activeUsers[chatId] = { expiresAt };
     saveDB();
 
     await sendMessage(chatId, `✅ Payment confirmed\n\nJoin here:\n${link}`);
-
     await sendMessage(ADMIN_ID, `💰 PAYMENT OK\nUser: ${chatId}`);
   }
 
   res.sendStatus(200);
 });
 
-// ===== EXPIRY CHECK (EVERY 1 MIN) =====
+// ===== AUTO CLEAN (EVERY MIN) =====
 setInterval(async () => {
   const now = Date.now();
 
@@ -192,7 +188,7 @@ setInterval(async () => {
   }
 }, 60000);
 
-// ===== START SERVER =====
+// ===== START =====
 app.listen(PORT, async () => {
   log("🚀 Server running");
 
