@@ -1,15 +1,16 @@
-import TelegramBot from 'node-telegram-bot-api';
-import express from 'express';
-import pkg from 'pg';
+import express from "express";
+import TelegramBot from "node-telegram-bot-api";
+import pkg from "pg";
+import dotenv from "dotenv";
+
+dotenv.config();
+
 const { Pool } = pkg;
 
 const app = express();
 app.use(express.json());
 
-// =====================
-// BOT
-// =====================
-const bot = new TelegramBot(process.env.BOT_TOKEN);
+const PORT = process.env.PORT || 3000;
 
 // =====================
 // DATABASE
@@ -20,41 +21,26 @@ const pool = new Pool({
 });
 
 // =====================
-// SERVER (Railway)
+// TELEGRAM BOT
 // =====================
-app.get('/', (req, res) => {
-  res.send('Bot running');
+const bot = new TelegramBot(process.env.BOT_TOKEN);
+
+// =====================
+// WEBHOOK ROUTE
+// =====================
+app.post(`/bot${process.env.BOT_TOKEN}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log('🚀 Server running');
-});
-
 // =====================
-// TIME PARSER (5m, 2h, 3d, 1mo)
+// BOT COMMANDS
 // =====================
-function parseDuration(input) {
-  const match = input.match(/^(\d+)(m|h|d|mo)$/);
-  if (!match) return null;
 
-  const value = parseInt(match[1]);
-  const unit = match[2];
+// /start
+bot.onText(/\/start/, async (msg) => {
+  const userId = msg.from.id;
 
-  const now = Date.now();
-
-  switch (unit) {
-    case 'm': return now + value * 60 * 1000;
-    case 'h': return now + value * 60 * 60 * 1000;
-    case 'd': return now + value * 24 * 60 * 60 * 1000;
-    case 'mo': return now + value * 30 * 24 * 60 * 60 * 1000;
-    default: return null;
-  }
-}
-
-// =====================
-// ENSURE USER EXISTS
-// =====================
-async function ensureUser(userId) {
   try {
     await pool.query(
       `INSERT INTO users (user_id, has_access, expires_at)
@@ -62,36 +48,52 @@ async function ensureUser(userId) {
        ON CONFLICT (user_id) DO NOTHING`,
       [userId]
     );
-  } catch (err) {
-    console.error('ensureUser error:', err);
-  }
-}
 
-// =====================
-// START
-// =====================
-bot.onText(/\/start/, async (msg) => {
+    await bot.sendMessage(
+      msg.chat.id,
+      "Welcome 🚀\n\nUse /access to check your subscription."
+    );
+  } catch (err) {
+    console.error(err);
+  }
+});
+
+// /access
+bot.onText(/\/access/, async (msg) => {
   const userId = msg.from.id;
 
-  await ensureUser(userId);
+  try {
+    const result = await pool.query(
+      `SELECT has_access, expires_at FROM users WHERE user_id = $1`,
+      [userId]
+    );
 
-  bot.sendMessage(userId, `👋 Welcome!\n\nUse /buy 5m or /buy 1h`);
+    if (result.rows.length === 0) {
+      return bot.sendMessage(msg.chat.id, "No access record found.");
+    }
+
+    const { has_access, expires_at } = result.rows[0];
+
+    const now = Date.now();
+
+    if (has_access && expires_at > now) {
+      bot.sendMessage(msg.chat.id, "✅ You have access.");
+    } else {
+      bot.sendMessage(msg.chat.id, "❌ Access expired or not active.");
+    }
+
+  } catch (err) {
+    console.error(err);
+  }
 });
 
 // =====================
-// BUY (TEST)
+// PAYMENT SIMULATION (you can replace later with PayPal webhook)
 // =====================
-bot.onText(/\/buy (.+)/, async (msg, match) => {
-  const userId = msg.from.id;
-  const durationInput = match[1];
+app.get("/grant-access/:userId", async (req, res) => {
+  const userId = req.params.userId;
 
-  const expiresAt = parseDuration(durationInput);
-
-  if (!expiresAt) {
-    return bot.sendMessage(userId, `❌ Invalid format\nUse: 5m, 1h, 3d, 1mo`);
-  }
-
-  await ensureUser(userId);
+  const expires = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 days
 
   try {
     await pool.query(
@@ -99,100 +101,32 @@ bot.onText(/\/buy (.+)/, async (msg, match) => {
        SET has_access = true,
            expires_at = $1
        WHERE user_id = $2`,
-      [expiresAt, userId]
+      [expires, userId]
     );
 
-    bot.sendMessage(userId, `✅ Access granted for ${durationInput}`);
+    await bot.sendMessage(userId, "🎉 Access granted for 30 days!");
+
+    res.send("Access granted");
+
   } catch (err) {
     console.error(err);
-    bot.sendMessage(userId, `❌ Error granting access`);
+    res.status(500).send("Error");
   }
 });
 
 // =====================
-// STATUS
+// START SERVER + WEBHOOK
 // =====================
-bot.onText(/\/status/, async (msg) => {
-  const userId = msg.from.id;
-
-  await ensureUser(userId);
+app.listen(PORT, async () => {
+  console.log("🚀 Server running");
 
   try {
-    const result = await pool.query(
-      `SELECT has_access, expires_at
-       FROM users
-       WHERE user_id = $1`,
-      [userId]
-    );
+    const url = process.env.RAILWAY_STATIC_URL;
 
-    const user = result.rows[0];
+    await bot.setWebHook(`${url}/bot${process.env.BOT_TOKEN}`);
 
-    if (!user.has_access) {
-      return bot.sendMessage(userId, `❌ No active access`);
-    }
-
-    const remaining = user.expires_at - Date.now();
-
-    if (remaining <= 0) {
-      return bot.sendMessage(userId, `⛔ Expired`);
-    }
-
-    const minutes = Math.floor(remaining / 60000);
-    const hours = Math.floor(minutes / 60);
-    const days = Math.floor(hours / 24);
-
-    bot.sendMessage(
-      userId,
-      `✅ Active\n⏳ Remaining: ${days}d ${hours % 24}h ${minutes % 60}m`
-    );
+    console.log("✅ Webhook set:", `${url}/bot${process.env.BOT_TOKEN}`);
   } catch (err) {
-    console.error(err);
-    bot.sendMessage(userId, `❌ Error fetching status`);
+    console.error("Webhook error:", err);
   }
 });
-
-// =====================
-// AUTO EXPIRY CHECK (NO SPAM)
-// =====================
-setInterval(async () => {
-  try {
-    const now = Date.now();
-
-    const result = await pool.query(
-      `SELECT user_id FROM users
-       WHERE has_access = true AND expires_at <= $1`,
-      [now]
-    );
-
-    for (const user of result.rows) {
-      await pool.query(
-        `UPDATE users
-         SET has_access = false
-         WHERE user_id = $1`,
-        [user.user_id]
-      );
-
-      bot.sendMessage(user.user_id, `⛔ Your access expired`);
-    }
-  } catch (err) {
-    console.error('Expiry error:', err);
-  }
-}, 60000);
-
-// =====================
-// WEBHOOK (FIXED)
-// =====================
-const url = process.env.RAILWAY_STATIC_URL;
-
-if (url) {
-  bot.setWebHook(`${url}/bot${process.env.BOT_TOKEN}`);
-
-  app.post(`/bot${process.env.BOT_TOKEN}`, (req, res) => {
-    bot.processUpdate(req.body);
-    res.sendStatus(200);
-  });
-
-  console.log('✅ Webhook set');
-} else {
-  bot.startPolling();
-}
