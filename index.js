@@ -1,9 +1,6 @@
-import dotenv from "dotenv";
 import express from "express";
 import axios from "axios";
 import fs from "fs";
-
-dotenv.config();
 
 const app = express();
 app.use(express.json());
@@ -135,7 +132,7 @@ app.post("/paypal-webhook", async (req, res) => {
 
     delete db.pendingUsers[chatId];
 
-    // CREATE INVITE
+    // CREATE INVITE LINK
     const invite = await axios.post(
       `https://api.telegram.org/bot${BOT_TOKEN}/createChatInviteLink`,
       {
@@ -147,7 +144,7 @@ app.post("/paypal-webhook", async (req, res) => {
 
     const link = invite.data.result.invite_link;
 
-    // SAVE ACCESS (1 month)
+    // SAVE ACCESS (1 MONTH)
     const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
 
     db.activeUsers[chatId] = { expiresAt };
@@ -160,7 +157,7 @@ app.post("/paypal-webhook", async (req, res) => {
   res.sendStatus(200);
 });
 
-// ===== AUTO CLEAN (EVERY MIN) =====
+// ===== AUTO REMOVE EXPIRED USERS =====
 setInterval(async () => {
   const now = Date.now();
 
@@ -188,7 +185,7 @@ setInterval(async () => {
   }
 }, 60000);
 
-// ===== START =====
+// ===== START SERVER =====
 app.listen(PORT, async () => {
   log("🚀 Server running");
 
