@@ -15,6 +15,7 @@ const pool = new Pool({
 
 const PORT = process.env.PORT || 3000;
 
+// ===== START COMMAND =====
 bot.command("start", async (ctx) => {
   const userId = ctx.from.id;
 
@@ -26,6 +27,7 @@ bot.command("start", async (ctx) => {
   await ctx.reply("Welcome 🚀\n\nUse /access to check your subscription.");
 });
 
+// ===== ACCESS CHECK =====
 bot.command("access", async (ctx) => {
   const userId = ctx.from.id;
 
@@ -50,6 +52,7 @@ bot.command("access", async (ctx) => {
   return ctx.reply(`✅ Active\n⏳ Remaining: ${remaining}s`);
 });
 
+// ===== BUY COMMAND =====
 bot.command("buy", async (ctx) => {
   const userId = ctx.from.id;
 
@@ -62,6 +65,7 @@ bot.command("buy", async (ctx) => {
   });
 });
 
+// ===== PAYPAL WEBHOOK =====
 app.post("/paypal-webhook", async (req, res) => {
   try {
     const event = req.body;
@@ -85,6 +89,7 @@ app.post("/paypal-webhook", async (req, res) => {
   }
 });
 
+// ===== TELEGRAM WEBHOOK =====
 app.post(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
   try {
     await bot.handleUpdate(req.body);
@@ -95,8 +100,12 @@ app.post(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
   }
 });
 
+// ===== START SERVER =====
 app.listen(PORT, async () => {
   console.log(`Server running on port ${PORT}`);
+
+  // ✅ CRITICAL FIX (prevents your crash)
+  await bot.init();
 
   const webhookUrl = `${process.env.RAILWAY_STATIC_URL}/bot${process.env.BOT_TOKEN}`;
 
