@@ -4,173 +4,178 @@ import TelegramBot from "node-telegram-bot-api";
 const app = express();
 app.use(express.json());
 
-// ==============================
-// ENV VARIABLES
-// ==============================
-const TOKEN = process.env.BOT_TOKEN;
+/* =========================
+   ENV VARIABLES
+========================= */
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const PORT = process.env.PORT || 8080;
 const ADMIN_ID = process.env.ADMIN_ID;
+const CHANNEL_ID = process.env.CHANNEL_ID;
 
-// 🔥 YOUR PAYPAL LINK
-const PAYMENT_LINK = "https://www.paypal.com/ncp/payment/GTK5FEXNGNBDU";
-
-// 🔥 YOUR PRIVATE CHANNEL LINK (PUT YOUR REAL ONE)
-const CHANNEL_LINK = "https://t.me/+YOUR_PRIVATE_LINK";
-
-// ==============================
-// SAFETY CHECK
-// ==============================
-if (!TOKEN) {
+if (!BOT_TOKEN) {
   console.error("❌ BOT_TOKEN missing");
   process.exit(1);
 }
 
-console.log("✅ BOT TOKEN LOADED");
+if (!CHANNEL_ID) {
+  console.error("❌ CHANNEL_ID missing");
+  process.exit(1);
+}
 
-// ==============================
-// TELEGRAM BOT INIT
-// ==============================
-const bot = new TelegramBot(TOKEN, { polling: false });
+console.log("✅ ENV loaded");
 
-// ==============================
-// DEBUG LOGS
-// ==============================
-app.use((req, res, next) => {
-  console.log("➡️ Incoming:", req.method, req.url);
-  next();
-});
+/* =========================
+   BOT INIT
+========================= */
+const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
-// ==============================
-// TELEGRAM WEBHOOK
-// ==============================
-app.post(`/telegram-webhook/${TOKEN}`, (req, res) => {
-  console.log("📩 Update received:", JSON.stringify(req.body));
+/* =========================
+   PENDING USERS (queue)
+========================= */
+let pendingUsers = [];
 
+/* =========================
+   TELEGRAM WEBHOOK
+========================= */
+app.post(`/telegram-webhook/${BOT_TOKEN}`, (req, res) => {
   try {
     bot.processUpdate(req.body);
     res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Telegram webhook error:", err);
+    console.error("❌ Telegram error:", err);
     res.sendStatus(200);
   }
 });
 
-// ==============================
-// PAYPAL WEBHOOK (FINAL FIX)
-// ==============================
-app.post("/paypal-webhook", (req, res) => {
-  console.log("💰 FULL PAYPAL EVENT:", JSON.stringify(req.body, null, 2));
-
+/* =========================
+   PAYPAL WEBHOOK
+========================= */
+app.post("/paypal-webhook", async (req, res) => {
   const event = req.body;
 
-  try {
-    if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
-      const email = event.resource?.payer?.email_address;
+  console.log("💰 PAYPAL EVENT:", JSON.stringify(event, null, 2));
 
-      console.log("✅ PAYMENT DETECTED:", email);
+  if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
 
-      // Notify admin
+    // Take the oldest pending user
+    const user = pendingUsers.shift();
+
+    if (!user) {
+      console.log("❌ No pending user");
+      return res.sendStatus(200);
+    }
+
+    const telegramId = user.chatId;
+    console.log("✅ MATCHED USER:", telegramId);
+
+    try {
+      // 🎯 ONE-TIME INVITE (1 min expiry)
+      const invite = await bot.createChatInviteLink(CHANNEL_ID, {
+        member_limit: 1,
+        expire_date: Math.floor(Date.now() / 1000) + 60
+      });
+
+      // Send access
+      await bot.sendMessage(
+        telegramId,
+        "✅ Payment received! Join quickly (1 min access):",
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "🔓 Join Channel", url: invite.invite_link }]
+            ]
+          }
+        }
+      );
+
+      // 🔥 AUTO KICK AFTER 1 MINUTE
+      setTimeout(async () => {
+        try {
+          await bot.banChatMember(CHANNEL_ID, telegramId);
+          await bot.unbanChatMember(CHANNEL_ID, telegramId);
+
+          await bot.sendMessage(
+            telegramId,
+            "⛔ Test access expired (1 min)."
+          );
+
+          console.log("🚫 Removed:", telegramId);
+        } catch (err) {
+          console.error("❌ Kick error:", err);
+        }
+      }, 1 * 60 * 1000);
+
+      // Admin log
       if (ADMIN_ID) {
         bot.sendMessage(
           ADMIN_ID,
-          `💰 Payment confirmed\nEmail: ${email || "unknown"}`
+          `💰 Payment OK\nUser: ${telegramId}`
         );
       }
+
+    } catch (err) {
+      console.error("❌ Invite error:", err);
     }
-
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ PayPal webhook error:", err);
-    res.sendStatus(200);
   }
+
+  res.sendStatus(200);
 });
 
-// ==============================
-// START SERVER
-// ==============================
-app.listen(PORT, async () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-
-  const webhookUrl = `https://perceptive-empathy-production-18c6.up.railway.app/telegram-webhook/${TOKEN}`;
-
-  try {
-    await bot.setWebHook(webhookUrl);
-    console.log("✅ Telegram webhook set:", webhookUrl);
-  } catch (err) {
-    console.error("❌ Webhook setup error:", err);
-  }
-});
-
-// ==============================
-// COMMANDS
-// ==============================
+/* =========================
+   COMMANDS
+========================= */
 
 // START
 bot.onText(/\/start/, (msg) => {
-  bot.sendMessage(
-    msg.chat.id,
-    "Welcome 👋 Choose an option:",
-    {
-      reply_markup: {
-        keyboard: [
-          ["💰 Buy Access"],
-          ["ℹ️ Help"]
-        ],
-        resize_keyboard: true
-      }
+  bot.sendMessage(msg.chat.id, "Welcome 👋", {
+    reply_markup: {
+      keyboard: [["💰 Buy Access"]],
+      resize_keyboard: true
     }
-  );
-});
-
-// HELP
-bot.onText(/\/help/, (msg) => {
-  bot.sendMessage(msg.chat.id, "Use /buy to purchase access.");
+  });
 });
 
 // BUY
-bot.onText(/\/buy/, (msg) => {
-  sendPayment(msg);
-});
+bot.onText(/Buy Access|\/buy/, (msg) => {
+  const chatId = msg.chat.id;
 
-// BUTTON HANDLER
-bot.on("message", (msg) => {
-  const text = msg.text;
+  // Store user before payment
+  pendingUsers.push({
+    chatId,
+    time: Date.now()
+  });
 
-  if (text === "💰 Buy Access") {
-    sendPayment(msg);
-  }
-
-  if (text === "ℹ️ Help") {
-    bot.sendMessage(msg.chat.id, "Use /buy to purchase access.");
-  }
-});
-
-// ==============================
-// PAYMENT FUNCTION
-// ==============================
-function sendPayment(msg) {
-  bot.sendMessage(
-    msg.chat.id,
-    "Click below to pay:",
-    {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "💳 Pay Now",
-              url: PAYMENT_LINK
-            }
-          ]
-        ]
-      }
+  bot.sendMessage(chatId, "Click below to pay:", {
+    reply_markup: {
+      inline_keyboard: [
+        [{
+          text: "💳 Pay Now",
+          url: "https://www.paypal.com/ncp/payment/GTK5FEXNGNBDU"
+        }]
+      ]
     }
-  );
+  });
 
-  // Notify admin that user clicked buy
   if (ADMIN_ID) {
     bot.sendMessage(
       ADMIN_ID,
-      `🛒 User clicked BUY\nUser ID: ${msg.from.id}\nUsername: @${msg.from.username || "N/A"}`
+      `🛒 BUY CLICK\nUser: ${chatId}`
     );
   }
-}
+});
+
+/* =========================
+   SERVER
+========================= */
+app.listen(PORT, async () => {
+  console.log("🚀 Running on port", PORT);
+
+  const WEBHOOK_URL = `https://perceptive-empathy-production-18c6.up.railway.app/telegram-webhook/${BOT_TOKEN}`;
+
+  try {
+    await bot.setWebHook(WEBHOOK_URL);
+    console.log("✅ Telegram webhook set");
+  } catch (err) {
+    console.error("❌ Webhook error:", err);
+  }
+});
