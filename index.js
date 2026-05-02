@@ -1,6 +1,7 @@
 import express from "express";
 import { Bot } from "grammy";
 import pkg from "pg";
+
 const { Pool } = pkg;
 
 const app = express();
@@ -14,8 +15,9 @@ const pool = new Pool({
 });
 
 const PORT = process.env.PORT || 3000;
+const CHANNEL_ID = process.env.CHANNEL_ID;
 
-// ===== START COMMAND =====
+// ================= START COMMAND =================
 bot.command("start", async (ctx) => {
   const userId = ctx.from.id;
 
@@ -27,7 +29,7 @@ bot.command("start", async (ctx) => {
   await ctx.reply("Welcome 🚀\n\nUse /access to check your subscription.");
 });
 
-// ===== ACCESS CHECK =====
+// ================= ACCESS CHECK =================
 bot.command("access", async (ctx) => {
   const userId = ctx.from.id;
 
@@ -48,11 +50,10 @@ bot.command("access", async (ctx) => {
   }
 
   const remaining = expires_at - now;
-
-  return ctx.reply(`✅ Active\n⏳ Remaining: ${remaining}s`);
+  ctx.reply(`✅ Active\n⏳ Remaining: ${remaining}s`);
 });
 
-// ===== BUY COMMAND =====
+// ================= BUY =================
 bot.command("buy", async (ctx) => {
   const userId = ctx.from.id;
 
@@ -60,12 +61,14 @@ bot.command("buy", async (ctx) => {
 
   await ctx.reply("💰 Click below to subscribe:", {
     reply_markup: {
-      inline_keyboard: [[{ text: "💰 Buy Access", url: link }]],
+      inline_keyboard: [
+        [{ text: "💰 Buy Access", url: link }]
+      ],
     },
   });
 });
 
-// ===== PAYPAL WEBHOOK =====
+// ================= PAYPAL WEBHOOK =================
 app.post("/paypal-webhook", async (req, res) => {
   try {
     const event = req.body;
@@ -79,40 +82,70 @@ app.post("/paypal-webhook", async (req, res) => {
         [userId, expires]
       );
 
-      console.log("User activated:", userId);
+      console.log("✅ User activated:", userId);
     }
 
     res.sendStatus(200);
   } catch (err) {
-    console.error("PayPal webhook error:", err);
+    console.error("❌ PayPal webhook error:", err);
     res.sendStatus(500);
   }
 });
 
-// ===== TELEGRAM WEBHOOK =====
-app.post(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
+// ================= TELEGRAM WEBHOOK =================
+app.use(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
   try {
-    await bot.handleUpdate(req.body);
-    res.sendStatus(200);
+    await bot.init();
+    await bot.handleUpdate(req.body, res);
   } catch (err) {
     console.error("Telegram webhook error:", err);
     res.sendStatus(500);
   }
 });
 
-// ===== START SERVER =====
-app.listen(PORT, async () => {
-  console.log(`Server running on port ${PORT}`);
+// ================= AUTO KICK EXPIRED USERS =================
+async function kickExpiredUsers() {
+  try {
+    const now = Math.floor(Date.now() / 1000);
 
-  // ✅ CRITICAL FIX (prevents your crash)
-  await bot.init();
+    const result = await pool.query(
+      "SELECT user_id FROM users WHERE has_access = true AND expires_at < $1",
+      [now]
+    );
+
+    for (const row of result.rows) {
+      const userId = row.user_id;
+
+      try {
+        await bot.api.banChatMember(CHANNEL_ID, userId);
+        await bot.api.unbanChatMember(CHANNEL_ID, userId);
+
+        console.log(`❌ Kicked expired user: ${userId}`);
+
+        await pool.query(
+          "UPDATE users SET has_access = false WHERE user_id = $1",
+          [userId]
+        );
+
+      } catch (err) {
+        console.error(`Kick failed for ${userId}:`, err.message);
+      }
+    }
+
+  } catch (err) {
+    console.error("Auto-kick error:", err);
+  }
+}
+
+setInterval(kickExpiredUsers, 5 * 60 * 1000);
+
+// ================= START SERVER =================
+app.listen(PORT, async () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 
   const webhookUrl = `${process.env.RAILWAY_STATIC_URL}/bot${process.env.BOT_TOKEN}`;
 
-  try {
-    await bot.api.setWebhook(webhookUrl);
-    console.log("Webhook set:", webhookUrl);
-  } catch (err) {
-    console.error("Webhook setup failed:", err);
-  }
+  await bot.api.setWebhook(webhookUrl);
+
+  console.log("✅ Telegram webhook set:", webhookUrl);
 });
