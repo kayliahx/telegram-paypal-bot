@@ -1,177 +1,204 @@
-import express from "express";
-import TelegramBot from "node-telegram-bot-api";
+require("dotenv").config();
+const express = require("express");
+const axios = require("axios");
+const fs = require("fs");
 
 const app = express();
 app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const PORT = process.env.PORT || 8080;
-
 const ADMIN_ID = process.env.ADMIN_ID;
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
-const PAYMENT_LINK = "https://www.paypal.com/ncp/payment/GTK5FEXNGNBDU";
+const PORT = process.env.PORT || 8080;
 
-// store last buyer
-let pendingUsers = new Map();
+// ===== STORAGE =====
+const DB_FILE = "./db.json";
 
-const bot = new TelegramBot(BOT_TOKEN, { polling: false });
+let db = {
+  pendingUsers: {},
+  activeUsers: {}
+};
 
-console.log("✅ BOT TOKEN LOADED");
+if (fs.existsSync(DB_FILE)) {
+  db = JSON.parse(fs.readFileSync(DB_FILE));
+}
 
-/* =========================
-   TELEGRAM WEBHOOK
-========================= */
+function saveDB() {
+  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
+}
+
+// ===== TELEGRAM =====
+async function sendMessage(chatId, text, extra = {}) {
+  return axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
+    chat_id: chatId,
+    text,
+    ...extra
+  });
+}
+
+// ===== LOGS =====
+function log(msg) {
+  console.log(msg);
+}
+
+// ===== TELEGRAM WEBHOOK =====
 app.post(`/telegram-webhook/${BOT_TOKEN}`, async (req, res) => {
-  try {
-    const msg = req.body.message;
-    if (!msg) return res.sendStatus(200);
+  const msg = req.body.message;
+  if (!msg) return res.sendStatus(200);
 
-    const chatId = msg.chat.id;
+  const chatId = msg.chat.id;
+  const text = msg.text || "";
 
-    // ✅ better username display
-    const username =
-      msg.from.username
-        ? `@${msg.from.username}`
-        : `${msg.from.first_name || ""} ${msg.from.last_name || ""}`.trim() || "Unknown";
+  log(`📩 ${chatId} → ${text}`);
 
-    console.log("📩 Update:", msg.text);
-
-    /* ===== START ===== */
-    if (msg.text === "/start") {
-      bot.sendMessage(chatId, "Welcome 👋 Choose an option:", {
-        reply_markup: {
-          keyboard: [
-            ["💰 Buy Access"],
-            ["ℹ️ Help"]
-          ],
-          resize_keyboard: true
-        }
-      });
-    }
-
-    /* ===== BUY ===== */
-    if (msg.text === "/buy" || msg.text === "💰 Buy Access") {
-      pendingUsers.set(chatId, Date.now());
-
-      // admin notify
-      bot.sendMessage(ADMIN_ID,
-        `💰 BUY CLICK\nUser: ${chatId}\nName: ${username}`
-      );
-
-      bot.sendMessage(chatId, "Click below to pay:", {
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: "💳 Pay Now", url: PAYMENT_LINK }]
-          ]
-        }
-      });
-    }
-
-    /* ===== STATUS ===== */
-    if (msg.text === "/status") {
-      bot.sendMessage(chatId,
-        `🧾 STATUS\nUser ID: ${chatId}\nPending payment: ${pendingUsers.has(chatId) ? "YES" : "NO"}`
-      );
-    }
-
-    /* ===== ACCESS ===== */
-    if (msg.text === "/access") {
-      bot.sendMessage(chatId,
-        "If you already paid, wait a few seconds. Access is automatic after payment."
-      );
-    }
-
-    /* ===== HELP ===== */
-    if (msg.text === "ℹ️ Help") {
-      bot.sendMessage(chatId,
-        "Use /buy to purchase access.\nAccess is granted automatically after payment."
-      );
-    }
-
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ Telegram error:", err);
-    res.sendStatus(500);
-  }
-});
-
-/* =========================
-   PAYPAL WEBHOOK
-========================= */
-app.post("/paypal-webhook", async (req, res) => {
-  try {
-    const event = req.body;
-
-    console.log("💰 PAYPAL EVENT:", JSON.stringify(event, null, 2));
-
-    if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
-      const email =
-        event.resource?.payer?.email_address || "unknown";
-
-      console.log("✅ PAYMENT DETECTED:", email);
-
-      // take latest buyer
-      const lastUser = Array.from(pendingUsers.keys()).pop();
-
-      if (!lastUser) {
-        console.log("❌ No pending user");
-        return res.sendStatus(200);
+  // START
+  if (text === "/start") {
+    await sendMessage(chatId, "Welcome 👋 Choose an option:", {
+      reply_markup: {
+        keyboard: [
+          ["💰 Buy Access"],
+          ["ℹ️ Help"]
+        ],
+        resize_keyboard: true
       }
+    });
+  }
 
-      console.log("✅ MATCHED USER:", lastUser);
+  // HELP
+  if (text === "ℹ️ Help") {
+    await sendMessage(chatId, "Use /buy to purchase access.");
+  }
 
-      // create invite link
-      const invite = await bot.createChatInviteLink(CHANNEL_ID, {
-        member_limit: 1,
-        expire_date: Math.floor(Date.now() / 1000) + 300 // 5 min
-      });
-
-      // send to user
-      await bot.sendMessage(lastUser,
-        `✅ Payment received!\n\n🔗 Join here:\n${invite.invite_link}`
-      );
-
-      // admin notify
-      await bot.sendMessage(ADMIN_ID,
-        `💰 PAYMENT OK\nUser: ${lastUser}\nEmail: ${email}`
-      );
-
-      // kick after 5 min
-      setTimeout(async () => {
-        try {
-          await bot.banChatMember(CHANNEL_ID, lastUser);
-          await bot.unbanChatMember(CHANNEL_ID, lastUser);
-
-          console.log("🚫 Removed:", lastUser);
-
-          bot.sendMessage(ADMIN_ID,
-            `🚫 User removed after 5 min\nUser: ${lastUser}`
-          );
-        } catch (err) {
-          console.log("Kick error:", err.message);
-        }
-      }, 5 * 60 * 1000);
-
-      pendingUsers.delete(lastUser);
+  // STATUS
+  if (text === "/status") {
+    const user = db.activeUsers[chatId];
+    if (!user) {
+      return sendMessage(chatId, "❌ No active access.");
     }
 
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("❌ PayPal webhook error:", err);
-    res.sendStatus(500);
+    const remaining = Math.floor((user.expiresAt - Date.now()) / 1000);
+    return sendMessage(chatId, `✅ Active\n⏳ Remaining: ${remaining}s`);
   }
+
+  // ACCESS
+  if (text === "/access") {
+    if (!db.activeUsers[chatId]) {
+      return sendMessage(chatId, "❌ No access.");
+    }
+
+    return sendMessage(chatId, "✅ You already have access.");
+  }
+
+  // BUY
+  if (text === "💰 Buy Access" || text === "/buy") {
+    db.pendingUsers[chatId] = Date.now();
+    saveDB();
+
+    log(`🛒 BUY → ${chatId}`);
+
+    await sendMessage(chatId, "Click below to pay:", {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "Pay Now", url: "https://www.paypal.com/ncp/payment/GTK5FEXNGNBDU" }]
+        ]
+      }
+    });
+
+    await sendMessage(ADMIN_ID, `💰 BUY CLICK\nUser: ${chatId}`);
+  }
+
+  res.sendStatus(200);
 });
 
-/* =========================
-   START SERVER
-========================= */
+// ===== PAYPAL WEBHOOK =====
+app.post("/paypal-webhook", async (req, res) => {
+  const event = req.body;
+
+  log("💰 PAYPAL EVENT RECEIVED");
+
+  if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
+    const now = Date.now();
+
+    const validUser = Object.entries(db.pendingUsers)
+      .filter(([id, time]) => now - time < 10 * 60 * 1000)
+      .sort((a, b) => b[1] - a[1])[0];
+
+    if (!validUser) {
+      log("❌ No matching user");
+      return res.sendStatus(200);
+    }
+
+    const chatId = validUser[0];
+
+    log(`✅ MATCH → ${chatId}`);
+
+    delete db.pendingUsers[chatId];
+
+    // ===== CREATE INVITE =====
+    const invite = await axios.post(
+      `https://api.telegram.org/bot${BOT_TOKEN}/createChatInviteLink`,
+      {
+        chat_id: CHANNEL_ID,
+        member_limit: 1,
+        expire_date: Math.floor(Date.now() / 1000) + 300 // 5 min to use link
+      }
+    );
+
+    const link = invite.data.result.invite_link;
+
+    // ===== SAVE ACCESS (1 month) =====
+    const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
+
+    db.activeUsers[chatId] = {
+      expiresAt
+    };
+
+    saveDB();
+
+    await sendMessage(chatId, `✅ Payment confirmed\n\nJoin here:\n${link}`);
+
+    await sendMessage(ADMIN_ID, `💰 PAYMENT OK\nUser: ${chatId}`);
+  }
+
+  res.sendStatus(200);
+});
+
+// ===== EXPIRY CHECK (EVERY 1 MIN) =====
+setInterval(async () => {
+  const now = Date.now();
+
+  for (const chatId in db.activeUsers) {
+    if (db.activeUsers[chatId].expiresAt < now) {
+      try {
+        await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/banChatMember`, {
+          chat_id: CHANNEL_ID,
+          user_id: chatId
+        });
+
+        await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/unbanChatMember`, {
+          chat_id: CHANNEL_ID,
+          user_id: chatId
+        });
+
+        log(`🚫 Removed ${chatId}`);
+
+        delete db.activeUsers[chatId];
+        saveDB();
+      } catch (e) {
+        log("Kick error: " + (e.response?.data || e.message));
+      }
+    }
+  }
+}, 60000);
+
+// ===== START SERVER =====
 app.listen(PORT, async () => {
-  console.log(`🚀 Server running on ${PORT}`);
+  log("🚀 Server running");
 
-  const webhookUrl = `https://${process.env.RAILWAY_STATIC_URL}/telegram-webhook/${BOT_TOKEN}`;
+  await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/setWebhook`, {
+    url: `https://${process.env.RAILWAY_STATIC_URL}/telegram-webhook/${BOT_TOKEN}`
+  });
 
-  await bot.setWebHook(webhookUrl);
-
-  console.log("✅ Telegram webhook set:", webhookUrl);
+  log("✅ Telegram webhook set");
 });
