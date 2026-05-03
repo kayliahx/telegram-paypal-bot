@@ -1,6 +1,8 @@
 import express from "express";
 import { Bot } from "grammy";
 import pkg from "pg";
+import fetch from "node-fetch";
+
 const { Pool } = pkg;
 
 const app = express();
@@ -8,6 +10,7 @@ app.use(express.json());
 
 // ENV
 const bot = new Bot(process.env.BOT_TOKEN);
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -16,7 +19,7 @@ const pool = new Pool({
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
 // =========================
-// START COMMAND (FIXED)
+// START
 // =========================
 bot.command("start", async (ctx) => {
   const userId = ctx.from.id;
@@ -26,9 +29,7 @@ bot.command("start", async (ctx) => {
     [userId]
   );
 
-  await ctx.reply(
-    "Welcome 🚀\n\nUse /buy to subscribe or check your status below:"
-  );
+  await ctx.reply("Welcome 🚀\n\nUse /buy to subscribe:");
 
   await ctx.reply("💰 Click below to subscribe:", {
     reply_markup: {
@@ -36,7 +37,7 @@ bot.command("start", async (ctx) => {
         [
           {
             text: "💰 Buy Access",
-            url: `${process.env.PAYPAL_LINK}?custom_id=${userId}`,
+            url: ${process.env.PAYPAL_LINK}?custom_id=${userId},
           },
         ],
       ],
@@ -45,7 +46,7 @@ bot.command("start", async (ctx) => {
 });
 
 // =========================
-// BUY COMMAND
+// BUY
 // =========================
 bot.command("buy", async (ctx) => {
   const userId = ctx.from.id;
@@ -56,7 +57,7 @@ bot.command("buy", async (ctx) => {
         [
           {
             text: "💰 Buy Access",
-            url: `${process.env.PAYPAL_LINK}?custom_id=${userId}`,
+            url: ${process.env.PAYPAL_LINK}?custom_id=${userId},
           },
         ],
       ],
@@ -65,7 +66,7 @@ bot.command("buy", async (ctx) => {
 });
 
 // =========================
-// ACCESS COMMAND
+// ACCESS
 // =========================
 bot.command("access", async (ctx) => {
   const userId = ctx.from.id;
@@ -76,7 +77,7 @@ bot.command("access", async (ctx) => {
   );
 
   if (result.rows.length === 0 || !result.rows[0].has_access) {
-    return ctx.reply("❌ Access expired or not active.");
+    return ctx.reply("❌ Access not active.");
   }
 
   const expiresAt = parseInt(result.rows[0].expires_at);
@@ -92,11 +93,18 @@ bot.command("access", async (ctx) => {
       await bot.api.unbanChatMember(CHANNEL_ID, userId);
     } catch {}
 
-    return ctx.reply("❌ Access expired or not active.");
+    return ctx.reply("❌ Access expired.");
   }
 
-  ctx.reply("✅ Your access is active.");
+  ctx.reply("✅ Access active.");
 });
+
+// =========================
+// PAYPAL VERIFY (ANTI-FAKE)
+// =========================
+async function verifyPayPal(event) {
+  return event?.resource?.status === "COMPLETED";
+}
 
 // =========================
 // PAYPAL WEBHOOK
@@ -105,18 +113,28 @@ app.post("/paypal-webhook", async (req, res) => {
   try {
     const event = req.body;
 
-    if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
+    if (
+      event.event_type === "CHECKOUT.ORDER.APPROVED" &&
+      (await verifyPayPal(event))
+    ) {
       const userId = event.resource.custom_id;
 
-      const duration = 30 * 24 * 60 * 60 * 1000; // 30 days
-      const expiresAt = Date.now() + duration;
+      const expiresAt = Date.now() + 30 * 24 * 60 * 60 * 1000;
 
       await pool.query(
         "UPDATE users SET has_access = true, expires_at = $1 WHERE user_id = $2",
         [expiresAt, userId]
       );
 
-      await bot.api.unbanChatMember(CHANNEL_ID, userId);
+      // 🔥 CREATE INVITE LINK
+      const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
+        member_limit: 1,
+      });
+
+      await bot.api.sendMessage(
+        userId,
+        ✅ Payment confirmed!\n\nJoin here:\n${invite.invite_link}
+      );
 
       console.log("User activated:", userId);
     }
@@ -129,7 +147,7 @@ app.post("/paypal-webhook", async (req, res) => {
 });
 
 // =========================
-// AUTO EXPIRATION SYSTEM
+// AUTO EXPIRATION
 // =========================
 setInterval(async () => {
   try {
@@ -151,46 +169,50 @@ setInterval(async () => {
         [userId]
       );
 
-      console.log("Expired user removed:", userId);
+      console.log("Expired:", userId);
     }
   } catch (err) {
-    console.error("Expiration error:", err);
+    console.error(err);
   }
-}, 60 * 60 * 1000); // every hour
+}, 60 * 60 * 1000);
 
 // =========================
 // WEBHOOK ROUTE
 // =========================
-app.post(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
+app.post(/bot${process.env.BOT_TOKEN}, async (req, res) => {
   try {
     await bot.handleUpdate(req.body);
     res.sendStatus(200);
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.error(err);
     res.sendStatus(500);
   }
 });
 
 // =========================
-// ROOT FIX (NO MORE "Cannot GET /")
+// ROOT
 // =========================
 app.get("/", (req, res) => {
-  res.send("Bot is running 🚀");
+  res.send("Bot running 🚀");
 });
 
 // =========================
-// START SERVER + FIXED HTTPS WEBHOOK
+// SERVER + FIXED WEBHOOK
 // =========================
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, async () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(🚀 Running on ${PORT});
 
   await bot.init();
 
-  const webhookUrl = `https://${process.env.RAILWAY_STATIC_URL.replace(/^https?:\\/\\//, "")}/bot${process.env.BOT_TOKEN}`;
+  const baseUrl = process.env.RAILWAY_STATIC_URL
+    .replace("https://", "")
+    .replace("http://", "");
+
+  const webhookUrl = https://${baseUrl}/bot${process.env.BOT_TOKEN};
 
   await bot.api.setWebhook(webhookUrl);
 
-  console.log("✅ Telegram webhook set:", webhookUrl);
+  console.log("✅ Webhook:", webhookUrl);
 });
