@@ -1,216 +1,175 @@
-import express from "express";
-import { Bot } from "grammy";
-import pkg from "pg";
+import express from "express"
+import fetch from "node-fetch"
+import { Bot, InlineKeyboard } from "grammy"
 
-const { Pool } = pkg;
+const app = express()
+app.use(express.json())
 
-const app = express();
-app.use(express.json());
+const bot = new Bot(process.env.BOT_TOKEN)
 
-const bot = new Bot(process.env.BOT_TOKEN);
+const ADMIN_ID = process.env.ADMIN_ID
+const CHANNEL_ID = process.env.CHANNEL_ID
 
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-});
-
-const CHANNEL_ID = process.env.CHANNEL_ID;
-
-// =========================
-// ⏳ TIME CONFIG (EDIT HERE)
-// =========================
-const EXPIRY = {
-  minutes: 5,
-  hours: 0,
-  days: 0,
-  months: 0,
-};
-
-const EXPIRY_MS =
-  EXPIRY.minutes * 60 * 1000 +
-  EXPIRY.hours * 60 * 60 * 1000 +
-  EXPIRY.days * 24 * 60 * 60 * 1000 +
-  EXPIRY.months * 30 * 24 * 60 * 60 * 1000;
-
-// =========================
-// DEBUG LOGS
-// =========================
+// =====================
+// DEBUG LOGGER (KEEP THIS)
+// =====================
 bot.use((ctx, next) => {
-  console.log("📩 UPDATE:", JSON.stringify(ctx.update));
-  return next();
-});
+  console.log("UPDATE:", JSON.stringify(ctx.update))
+  return next()
+})
 
-// =========================
-// START
-// =========================
-bot.command("start", async (ctx) => {
-  const userId = ctx.from.id;
+// =====================
+// PAYPAL TOKEN
+// =====================
+async function getPayPalToken() {
+  const res = await fetch(`${process.env.PAYPAL_API}/v1/oauth2/token`, {
+    method: "POST",
+    headers: {
+      Authorization:
+        "Basic " +
+        Buffer.from(
+          process.env.PAYPAL_CLIENT_ID + ":" + process.env.PAYPAL_SECRET
+        ).toString("base64"),
+      "Content-Type": "application/x-www-form-urlencoded",
+    },
+    body: "grant_type=client_credentials",
+  })
 
-  await pool.query(
-    "INSERT INTO users (user_id, has_access, expires_at) VALUES ($1, false, 0) ON CONFLICT (user_id) DO NOTHING",
-    [userId]
-  );
+  const data = await res.json()
+  return data.access_token
+}
 
-  await ctx.reply("Welcome 🚀\n\nUse /buy to subscribe.");
-});
+// =====================
+// CREATE ORDER
+// =====================
+app.post("/create-order", async (req, res) => {
+  const { userId } = req.body
 
-// =========================
-// BUY
-// =========================
-bot.command("buy", async (ctx) => {
-  try {
-    console.log("👉 /buy triggered:", ctx.from);
+  const token = await getPayPalToken()
 
-    const userId = ctx.from.id;
-    const name = ctx.from.first_name || "NoName";
-    const username = ctx.from.username || "N/A";
-
-    const paypalLink = `${process.env.PAYPAL_LINK}?custom_id=${userId}`;
-
-    await ctx.reply("💰 Click below to subscribe:", {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "💰 Buy Access", url: paypalLink }],
-        ],
+  const orderRes = await fetch(
+    `${process.env.PAYPAL_API}/v2/checkout/orders`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
       },
-    });
+      body: JSON.stringify({
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            amount: {
+              currency_code: "USD",
+              value: "10.00",
+            },
+            custom_id: String(userId),
+          },
+        ],
+        application_context: {
+          return_url: "https://example.com/success",
+          cancel_url: "https://example.com/cancel",
+        },
+      }),
+    }
+  )
 
-    await bot.api.sendMessage(
-      process.env.ADMIN_ID,
-      `🛒 BUY CLICK\nUser: ${userId}\nName: ${name}\nUsername: @${username}`
-    );
+  const order = await orderRes.json()
 
-    console.log("✅ Admin notified");
+  const approve = order.links.find((l) => l.rel === "approve")
 
-  } catch (err) {
-    console.error("❌ BUY ERROR:", err);
-  }
-});
+  res.json({ url: approve.href })
+})
 
-// =========================
-// ACCESS
-// =========================
-bot.command("access", async (ctx) => {
-  const userId = ctx.from.id;
+// =====================
+// BUY COMMAND
+// =====================
+bot.command("buy", async (ctx) => {
+  const userId = ctx.from.id
 
-  const result = await pool.query(
-    "SELECT has_access, expires_at FROM users WHERE user_id = $1",
-    [userId]
-  );
+  console.log("BUY:", userId)
 
-  if (result.rows.length === 0 || !result.rows[0].has_access) {
-    return ctx.reply("❌ Access expired or not active.");
-  }
+  await bot.api.sendMessage(
+    ADMIN_ID,
+    `🛒 BUY CLICK\nUser: ${userId}\nName: ${ctx.from.first_name}`
+  )
 
-  if (Date.now() > result.rows[0].expires_at) {
-    return ctx.reply("❌ Access expired.");
-  }
+  const response = await fetch(
+    `${process.env.RAILWAY_STATIC_URL}/create-order`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    }
+  )
 
-  ctx.reply("✅ Access active.");
-});
+  const data = await response.json()
 
-// =========================
-// PAYPAL WEBHOOK
-// =========================
+  const keyboard = new InlineKeyboard().url("💰 Buy Access", data.url)
+
+  await ctx.reply("Click below to subscribe:", {
+    reply_markup: keyboard,
+  })
+})
+
+// =====================
+// WEBHOOK (PAYPAL)
+// =====================
 app.post("/paypal-webhook", async (req, res) => {
-  try {
-    const body = req.body;
+  const event = req.body
 
-    console.log("📩 PayPal event:", body.event_type);
+  console.log("PAYPAL EVENT:", event.event_type)
 
-    if (body.event_type === "PAYMENT.CAPTURE.COMPLETED") {
-      const userId = body.resource.custom_id;
+  if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
+    const customId =
+      event.resource.purchase_units?.[0]?.custom_id
 
-      if (!userId) {
-        console.log("❌ No custom_id found");
-        return res.sendStatus(200);
-      }
-
-      console.log("💰 Payment for user:", userId);
-
-      const expiresAt = Date.now() + EXPIRY_MS;
-
-      await pool.query(
-        "UPDATE users SET has_access = true, expires_at = $1 WHERE user_id = $2",
-        [expiresAt, userId]
-      );
-
-      // 🔗 invite link
-      const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
-        member_limit: 1,
-      });
-
-      await bot.api.sendMessage(
-        userId,
-        `✅ Payment confirmed!\n\nJoin here:\n${invite.invite_link}`
-      );
-
-      // ⏳ AUTO KICK AFTER EXPIRY
-      setTimeout(async () => {
-        try {
-          console.log("⏰ Expiring:", userId);
-
-          await bot.api.banChatMember(CHANNEL_ID, userId);
-          await bot.api.unbanChatMember(CHANNEL_ID, userId);
-
-          await pool.query(
-            "UPDATE users SET has_access = false WHERE user_id = $1",
-            [userId]
-          );
-
-          await bot.api.sendMessage(
-            process.env.ADMIN_ID,
-            `⛔ User expired: ${userId}`
-          );
-
-        } catch (err) {
-          console.error("❌ Expiry error:", err);
-        }
-      }, EXPIRY_MS);
+    if (!customId) {
+      console.log("❌ No custom_id")
+      return res.sendStatus(200)
     }
 
-    res.sendStatus(200);
+    console.log("✅ PAYMENT FOR:", customId)
 
-  } catch (err) {
-    console.error("❌ Webhook error:", err);
-    res.sendStatus(500);
+    await bot.api.sendMessage(
+      ADMIN_ID,
+      `💰 Payment OK\nUser: ${customId}`
+    )
+
+    // grant access
+    await bot.api.unbanChatMember(CHANNEL_ID, Number(customId))
+
+    // =====================
+    // 5 MINUTES ACCESS
+    // =====================
+    setTimeout(async () => {
+      try {
+        await bot.api.banChatMember(CHANNEL_ID, Number(customId))
+        await bot.api.unbanChatMember(CHANNEL_ID, Number(customId))
+
+        await bot.api.sendMessage(
+          customId,
+          "❌ Access expired."
+        )
+
+        console.log("⛔ User kicked:", customId)
+      } catch (e) {
+        console.log("Kick error:", e)
+      }
+    }, 5 * 60 * 1000) // 5 minutes
   }
-});
 
-// =========================
-// TELEGRAM WEBHOOK
-// =========================
-app.post(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
-  try {
-    await bot.handleUpdate(req.body);
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("Telegram error:", err);
-    res.sendStatus(500);
-  }
-});
+  res.sendStatus(200)
+})
 
-// =========================
-// ROOT
-// =========================
-app.get("/", (req, res) => {
-  res.send("Bot running 🚀");
-});
-
-// =========================
+// =====================
 // START SERVER
-// =========================
-const PORT = process.env.PORT || 8080;
+// =====================
+app.listen(8080, () => {
+  console.log("Server running on port 8080")
+})
 
-app.listen(PORT, async () => {
-  console.log(`🚀 Server running on ${PORT}`);
-
-  await bot.init();
-
-  const baseUrl = process.env.RAILWAY_STATIC_URL.replace("https://", "");
-  const webhookUrl = `https://${baseUrl}/bot${process.env.BOT_TOKEN}`;
-
-  await bot.api.setWebhook(webhookUrl);
-
-  console.log("✅ Webhook set:", webhookUrl);
-});
+// =====================
+// START BOT
+// =====================
+bot.start()
