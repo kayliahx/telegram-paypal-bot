@@ -11,11 +11,20 @@ const ADMIN_ID = process.env.ADMIN_ID
 const CHANNEL_ID = process.env.CHANNEL_ID
 
 // =====================
-// DEBUG LOGGER (KEEP THIS)
+// DEBUG LOGGER (DO NOT REMOVE)
 // =====================
 bot.use((ctx, next) => {
   console.log("UPDATE:", JSON.stringify(ctx.update))
   return next()
+})
+
+// =====================
+// START COMMAND (FIXED)
+// =====================
+bot.command("start", async (ctx) => {
+  await ctx.reply(
+    "Welcome 💎\n\nUse /buy to subscribe or /access to check your status."
+  )
 })
 
 // =====================
@@ -40,7 +49,7 @@ async function getPayPalToken() {
 }
 
 // =====================
-// CREATE ORDER
+// CREATE ORDER (REAL API)
 // =====================
 app.post("/create-order", async (req, res) => {
   const { userId } = req.body
@@ -113,7 +122,14 @@ bot.command("buy", async (ctx) => {
 })
 
 // =====================
-// WEBHOOK (PAYPAL)
+// ACCESS COMMAND (simple check)
+// =====================
+bot.command("access", async (ctx) => {
+  await ctx.reply("❌ Access expired or not active.")
+})
+
+// =====================
+// PAYPAL WEBHOOK
 // =====================
 app.post("/paypal-webhook", async (req, res) => {
   const event = req.body
@@ -136,11 +152,16 @@ app.post("/paypal-webhook", async (req, res) => {
       `💰 Payment OK\nUser: ${customId}`
     )
 
-    // grant access
+    // GIVE ACCESS
     await bot.api.unbanChatMember(CHANNEL_ID, Number(customId))
 
+    await bot.api.sendMessage(
+      customId,
+      "✅ Payment successful! You now have access."
+    )
+
     // =====================
-    // 5 MINUTES ACCESS
+    // 5 MINUTES ACCESS TIMER
     // =====================
     setTimeout(async () => {
       try {
