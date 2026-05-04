@@ -11,7 +11,7 @@ const ADMIN_ID = process.env.ADMIN_ID
 const CHANNEL_ID = process.env.CHANNEL_ID
 
 // =====================
-// DEBUG LOGGER (DO NOT REMOVE)
+// DEBUG LOGGER (KEEP)
 // =====================
 bot.use((ctx, next) => {
   console.log("UPDATE:", JSON.stringify(ctx.update))
@@ -19,12 +19,19 @@ bot.use((ctx, next) => {
 })
 
 // =====================
-// START COMMAND (FIXED)
+// START COMMAND
 // =====================
 bot.command("start", async (ctx) => {
   await ctx.reply(
     "Welcome 💎\n\nUse /buy to subscribe or /access to check your status."
   )
+})
+
+// =====================
+// ACCESS COMMAND
+// =====================
+bot.command("access", async (ctx) => {
+  await ctx.reply("❌ Access expired or not active.")
 })
 
 // =====================
@@ -49,7 +56,7 @@ async function getPayPalToken() {
 }
 
 // =====================
-// CREATE ORDER (REAL API)
+// CREATE ORDER (REAL)
 // =====================
 app.post("/create-order", async (req, res) => {
   const { userId } = req.body
@@ -84,7 +91,6 @@ app.post("/create-order", async (req, res) => {
   )
 
   const order = await orderRes.json()
-
   const approve = order.links.find((l) => l.rel === "approve")
 
   res.json({ url: approve.href })
@@ -122,13 +128,6 @@ bot.command("buy", async (ctx) => {
 })
 
 // =====================
-// ACCESS COMMAND (simple check)
-// =====================
-bot.command("access", async (ctx) => {
-  await ctx.reply("❌ Access expired or not active.")
-})
-
-// =====================
 // PAYPAL WEBHOOK
 // =====================
 app.post("/paypal-webhook", async (req, res) => {
@@ -161,7 +160,7 @@ app.post("/paypal-webhook", async (req, res) => {
     )
 
     // =====================
-    // 5 MINUTES ACCESS TIMER
+    // 5 MINUTES ACCESS
     // =====================
     setTimeout(async () => {
       try {
@@ -184,13 +183,23 @@ app.post("/paypal-webhook", async (req, res) => {
 })
 
 // =====================
+// TELEGRAM WEBHOOK ROUTE (FIXED)
+// =====================
+await bot.init()
+
+app.post(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
+  try {
+    await bot.handleUpdate(req.body)
+    res.sendStatus(200)
+  } catch (err) {
+    console.error("Webhook error:", err)
+    res.sendStatus(500)
+  }
+})
+
+// =====================
 // START SERVER
 // =====================
 app.listen(8080, () => {
   console.log("Server running on port 8080")
 })
-
-// =====================
-// START BOT
-// =====================
-bot.start()
