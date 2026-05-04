@@ -1,13 +1,14 @@
 import express from "express";
 import { Bot } from "grammy";
 import pkg from "pg";
+
 const { Pool } = pkg;
 
 const app = express();
 app.use(express.json());
 
-// ENV
 const bot = new Bot(process.env.BOT_TOKEN);
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
@@ -16,7 +17,31 @@ const pool = new Pool({
 const CHANNEL_ID = process.env.CHANNEL_ID;
 
 // =========================
-// START COMMAND
+// ⏳ TIME CONFIG (EDIT HERE)
+// =========================
+const EXPIRY = {
+  minutes: 5,
+  hours: 0,
+  days: 0,
+  months: 0,
+};
+
+const EXPIRY_MS =
+  EXPIRY.minutes * 60 * 1000 +
+  EXPIRY.hours * 60 * 60 * 1000 +
+  EXPIRY.days * 24 * 60 * 60 * 1000 +
+  EXPIRY.months * 30 * 24 * 60 * 60 * 1000;
+
+// =========================
+// DEBUG LOGS
+// =========================
+bot.use((ctx, next) => {
+  console.log("📩 UPDATE:", JSON.stringify(ctx.update));
+  return next();
+});
+
+// =========================
+// START
 // =========================
 bot.command("start", async (ctx) => {
   const userId = ctx.from.id;
@@ -26,33 +51,44 @@ bot.command("start", async (ctx) => {
     [userId]
   );
 
-  await ctx.reply(
-    "Welcome 🚀\n\nUse /buy to subscribe or /access to check your status."
-  );
+  await ctx.reply("Welcome 🚀\n\nUse /buy to subscribe.");
 });
 
 // =========================
-// BUY COMMAND
+// BUY
 // =========================
 bot.command("buy", async (ctx) => {
-  const userId = ctx.from.id;
+  try {
+    console.log("👉 /buy triggered:", ctx.from);
 
-  await ctx.reply("💰 Click below to subscribe:", {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          {
-            text: "💰 Buy Access",
-            url: `${process.env.PAYPAL_LINK}?custom_id=${userId}`,
-          },
+    const userId = ctx.from.id;
+    const name = ctx.from.first_name || "NoName";
+    const username = ctx.from.username || "N/A";
+
+    const paypalLink = `${process.env.PAYPAL_LINK}?custom_id=${userId}`;
+
+    await ctx.reply("💰 Click below to subscribe:", {
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: "💰 Buy Access", url: paypalLink }],
         ],
-      ],
-    },
-  });
+      },
+    });
+
+    await bot.api.sendMessage(
+      process.env.ADMIN_ID,
+      `🛒 BUY CLICK\nUser: ${userId}\nName: ${name}\nUsername: @${username}`
+    );
+
+    console.log("✅ Admin notified");
+
+  } catch (err) {
+    console.error("❌ BUY ERROR:", err);
+  }
 });
 
 // =========================
-// ACCESS COMMAND
+// ACCESS
 // =========================
 bot.command("access", async (ctx) => {
   const userId = ctx.from.id;
@@ -66,23 +102,11 @@ bot.command("access", async (ctx) => {
     return ctx.reply("❌ Access expired or not active.");
   }
 
-  const expiresAt = parseInt(result.rows[0].expires_at);
-
-  if (Date.now() > expiresAt) {
-    await pool.query(
-      "UPDATE users SET has_access = false WHERE user_id = $1",
-      [userId]
-    );
-
-    try {
-      await bot.api.banChatMember(CHANNEL_ID, userId);
-      await bot.api.unbanChatMember(CHANNEL_ID, userId);
-    } catch {}
-
-    return ctx.reply("❌ Access expired or not active.");
+  if (Date.now() > result.rows[0].expires_at) {
+    return ctx.reply("❌ Access expired.");
   }
 
-  ctx.reply("✅ Your access is active.");
+  ctx.reply("✅ Access active.");
 });
 
 // =========================
@@ -90,68 +114,68 @@ bot.command("access", async (ctx) => {
 // =========================
 app.post("/paypal-webhook", async (req, res) => {
   try {
-    const event = req.body;
+    const body = req.body;
 
-    if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
-      const userId = event.resource.custom_id;
+    console.log("📩 PayPal event:", body.event_type);
 
-      const duration = 30 * 24 * 60 * 60 * 1000;
-      const expiresAt = Date.now() + duration;
+    if (body.event_type === "PAYMENT.CAPTURE.COMPLETED") {
+      const userId = body.resource.custom_id;
+
+      if (!userId) {
+        console.log("❌ No custom_id found");
+        return res.sendStatus(200);
+      }
+
+      console.log("💰 Payment for user:", userId);
+
+      const expiresAt = Date.now() + EXPIRY_MS;
 
       await pool.query(
         "UPDATE users SET has_access = true, expires_at = $1 WHERE user_id = $2",
         [expiresAt, userId]
       );
 
-      // create invite link
+      // 🔗 invite link
       const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
         member_limit: 1,
       });
 
       await bot.api.sendMessage(
         userId,
-        `✅ Payment received!\n\nJoin here:\n${invite.invite_link}`
+        `✅ Payment confirmed!\n\nJoin here:\n${invite.invite_link}`
       );
 
-      console.log("User activated:", userId);
+      // ⏳ AUTO KICK AFTER EXPIRY
+      setTimeout(async () => {
+        try {
+          console.log("⏰ Expiring:", userId);
+
+          await bot.api.banChatMember(CHANNEL_ID, userId);
+          await bot.api.unbanChatMember(CHANNEL_ID, userId);
+
+          await pool.query(
+            "UPDATE users SET has_access = false WHERE user_id = $1",
+            [userId]
+          );
+
+          await bot.api.sendMessage(
+            process.env.ADMIN_ID,
+            `⛔ User expired: ${userId}`
+          );
+
+        } catch (err) {
+          console.error("❌ Expiry error:", err);
+        }
+      }, EXPIRY_MS);
     }
 
     res.sendStatus(200);
+
   } catch (err) {
-    console.error(err);
+    console.error("❌ Webhook error:", err);
     res.sendStatus(500);
   }
 });
-
-// =========================
-// AUTO EXPIRATION
-// =========================
-setInterval(async () => {
-  try {
-    const result = await pool.query(
-      "SELECT user_id FROM users WHERE has_access = true AND expires_at < $1",
-      [Date.now()]
-    );
-
-    for (const row of result.rows) {
-      const userId = row.user_id;
-
-      try {
-        await bot.api.banChatMember(CHANNEL_ID, userId);
-        await bot.api.unbanChatMember(CHANNEL_ID, userId);
-      } catch {}
-
-      await pool.query(
-        "UPDATE users SET has_access = false WHERE user_id = $1",
-        [userId]
-      );
-
-      console.log("Expired user removed:", userId);
-    }
-  } catch (err) {
-    console.error("Expiration error:", err);
-  }
-}, 60 * 60 * 1000);
 
 // =========================
 // TELEGRAM WEBHOOK
@@ -161,7 +185,7 @@ app.post(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
     await bot.handleUpdate(req.body);
     res.sendStatus(200);
   } catch (err) {
-    console.error("Webhook error:", err);
+    console.error("Telegram error:", err);
     res.sendStatus(500);
   }
 });
@@ -170,7 +194,7 @@ app.post(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
 // ROOT
 // =========================
 app.get("/", (req, res) => {
-  res.send("Bot is running 🚀");
+  res.send("Bot running 🚀");
 });
 
 // =========================
@@ -179,7 +203,7 @@ app.get("/", (req, res) => {
 const PORT = process.env.PORT || 8080;
 
 app.listen(PORT, async () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Server running on ${PORT}`);
 
   await bot.init();
 
@@ -188,5 +212,5 @@ app.listen(PORT, async () => {
 
   await bot.api.setWebhook(webhookUrl);
 
-  console.log("✅ Telegram webhook set:", webhookUrl);
+  console.log("✅ Webhook set:", webhookUrl);
 });
