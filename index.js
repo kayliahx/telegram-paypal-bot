@@ -19,7 +19,7 @@ bot.use((ctx, next) => {
 })
 
 // =====================
-// START
+// START COMMAND
 // =====================
 bot.command("start", async (ctx) => {
   await ctx.reply(
@@ -28,7 +28,7 @@ bot.command("start", async (ctx) => {
 })
 
 // =====================
-// ACCESS
+// ACCESS COMMAND
 // =====================
 bot.command("access", async (ctx) => {
   await ctx.reply("❌ Access expired or not active.")
@@ -56,70 +56,77 @@ async function getPayPalToken() {
 }
 
 // =====================
-// BUY (FIXED)
+// CREATE ORDER (DIRECT — NO INTERNAL FETCH)
+// =====================
+async function createPayPalOrder(userId) {
+  const token = await getPayPalToken()
+
+  const orderRes = await fetch(
+    `${process.env.PAYPAL_API}/v2/checkout/orders`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            amount: {
+              currency_code: "USD",
+              value: "10.00",
+            },
+            custom_id: String(userId),
+          },
+        ],
+        application_context: {
+          return_url: "https://example.com/success",
+          cancel_url: "https://example.com/cancel",
+        },
+      }),
+    }
+  )
+
+  const order = await orderRes.json()
+
+  const approve = order.links.find((l) => l.rel === "approve")
+
+  if (!approve) {
+    console.log("❌ PayPal error:", order)
+    throw new Error("PayPal link not found")
+  }
+
+  return approve.href
+}
+
+// =====================
+// BUY COMMAND (FIXED)
 // =====================
 bot.command("buy", async (ctx) => {
   try {
     const userId = ctx.from.id
-    const name = ctx.from.first_name || "Unknown"
 
     console.log("BUY:", userId)
 
-    // Notify admin
+    // notify admin
     await bot.api.sendMessage(
       ADMIN_ID,
-      `🛒 BUY CLICK\nUser: ${userId}\nName: ${name}`
+      `🛒 BUY CLICK\nUser: ${userId}\nName: ${ctx.from.first_name}`
     )
 
-    // Get PayPal token
-    const token = await getPayPalToken()
+    // create PayPal link directly
+    const url = await createPayPalOrder(userId)
 
-    // Create order DIRECTLY (no internal fetch)
-    const orderRes = await fetch(
-      `${process.env.PAYPAL_API}/v2/checkout/orders`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          intent: "CAPTURE",
-          purchase_units: [
-            {
-              amount: {
-                currency_code: "USD",
-                value: "10.00",
-              },
-              custom_id: String(userId),
-            },
-          ],
-          application_context: {
-            return_url: "https://example.com/success",
-            cancel_url: "https://example.com/cancel",
-          },
-        }),
-      }
-    )
-
-    const order = await orderRes.json()
-
-    const approve = order.links.find((l) => l.rel === "approve")
-
-    if (!approve || !approve.href) {
-      console.error("❌ PayPal link missing", order)
-      return ctx.reply("❌ Payment error. Try again.")
-    }
-
-    const keyboard = new InlineKeyboard().url("💰 Buy Access", approve.href)
+    const keyboard = new InlineKeyboard().url("💰 Buy Access", url)
 
     await ctx.reply("Click below to subscribe:", {
       reply_markup: keyboard,
     })
-
   } catch (err) {
     console.error("BUY ERROR:", err)
-    await ctx.reply("❌ Something went wrong.")
+
+    await ctx.reply("❌ Error creating payment link. Try again.")
   }
 })
 
@@ -147,7 +154,7 @@ app.post("/paypal-webhook", async (req, res) => {
       `💰 Payment OK\nUser: ${customId}`
     )
 
-    // GIVE ACCESS
+    // give access
     await bot.api.unbanChatMember(CHANNEL_ID, Number(customId))
 
     await bot.api.sendMessage(
@@ -155,7 +162,7 @@ app.post("/paypal-webhook", async (req, res) => {
       "✅ Payment successful! You now have access."
     )
 
-    // ⏱ 5 MINUTES ACCESS
+    // expire after 5 min
     setTimeout(async () => {
       try {
         await bot.api.banChatMember(CHANNEL_ID, Number(customId))
@@ -187,7 +194,7 @@ app.post(`/bot${process.env.BOT_TOKEN}`, async (req, res) => {
     res.sendStatus(200)
   } catch (err) {
     console.error("Webhook error:", err)
-    res.sendStatus(500)
+    res.sendStatus(200)
   }
 })
 
