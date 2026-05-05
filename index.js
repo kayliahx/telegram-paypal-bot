@@ -2,6 +2,7 @@ import express from "express"
 import { Bot } from "grammy"
 import fetch from "node-fetch"
 import pkg from "pg"
+
 const { Pool } = pkg
 
 // ===== ENV =====
@@ -18,6 +19,7 @@ if (!BOT_TOKEN || !BASE_URL) {
 // ===== SETUP =====
 const bot = new Bot(BOT_TOKEN)
 const app = express()
+
 app.use(express.json())
 
 const pool = new Pool({
@@ -25,12 +27,12 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 })
 
-// ===== START =====
+// ===== START COMMAND =====
 bot.command("start", async (ctx) => {
   await ctx.reply("Welcome 💎\n\nUse /buy or /access")
 })
 
-// ===== BUY =====
+// ===== BUY COMMAND =====
 bot.command("buy", async (ctx) => {
   try {
     const userId = ctx.from.id
@@ -39,56 +41,68 @@ bot.command("buy", async (ctx) => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: "Basic " + Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`).toString("base64")
+        Authorization:
+          "Basic " +
+          Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`).toString("base64")
       },
       body: JSON.stringify({
         intent: "CAPTURE",
-        purchase_units: [{
-          amount: {
-            currency_code: "EUR",
-            value: "0.20"
-          },
-          custom_id: userId.toString()
-        }]
+        purchase_units: [
+          {
+            amount: {
+              currency_code: "EUR",
+              value: "0.20"
+            },
+            custom_id: userId.toString()
+          }
+        ]
       })
     })
 
     const data = await order.json()
 
-    const link = data.links.find(l => l.rel === "approve").href
+    const approveLink = data.links?.find((l) => l.rel === "approve")?.href
+
+    if (!approveLink) {
+      throw new Error("No PayPal approval link")
+    }
 
     await ctx.reply("Click below to pay:", {
       reply_markup: {
-        inline_keyboard: [[{ text: "💰 Buy Access", url: link }]]
+        inline_keyboard: [[{ text: "💰 Buy Access", url: approveLink }]]
       }
     })
-
   } catch (err) {
-    console.error(err)
+    console.error("BUY ERROR:", err)
     await ctx.reply("❌ Error generating payment link. Try again.")
   }
 })
 
 // ===== ACCESS CHECK =====
 bot.command("access", async (ctx) => {
-  const userId = ctx.from.id
+  try {
+    const userId = ctx.from.id
 
-  const result = await pool.query(
-    "SELECT * FROM users WHERE telegram_id=$1",
-    [userId]
-  )
+    const result = await pool.query(
+      "SELECT * FROM users WHERE telegram_id=$1",
+      [userId]
+    )
 
-  if (result.rows.length === 0) {
-    return ctx.reply("❌ No access found")
+    if (result.rows.length === 0) {
+      return ctx.reply("❌ No access found")
+    }
+
+    const user = result.rows[0]
+
+    if (new Date(user.expiry) < new Date()) {
+      return ctx.reply("❌ Your access expired")
+    }
+
+    return ctx.reply("✅ You have access")
+  } catch (err) {
+    console.error(err)
+    ctx.reply("❌ Error checking access")
   }
-
-  const user = result.rows[0]
-
-  if (new Date(user.expiry) < new Date()) {
-    return ctx.reply("❌ Your access expired")
-  }
-
-  ctx.reply("✅ You have access")
 })
 
 // ===== PAYPAL WEBHOOK =====
@@ -97,39 +111,46 @@ app.post("/paypal-webhook", async (req, res) => {
     const event = req.body
 
     if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
-
       const userId = event.resource?.custom_id
 
-      if (!userId) return res.sendStatus(200)
+      if (!userId) {
+        console.log("❌ Missing custom_id")
+        return res.sendStatus(200)
+      }
 
       console.log("💰 PAYMENT SUCCESS:", userId)
 
       // ===== CREATE INVITE LINK =====
-      const link = await bot.api.createChatInviteLink(CHANNEL_ID, {
+      const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
         member_limit: 1,
-        expire_date: Math.floor(Date.now() / 1000) + (60 * 60) // 1 hour
+        expire_date: Math.floor(Date.now() / 1000) + 3600 // 1 hour
       })
 
       // ===== SAVE USER =====
-      const expiry = new Date(Date.now() + (24 * 60 * 60 * 1000)) // 24h access
+      const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000)
 
-      await pool.query(`
+      await pool.query(
+        `
         INSERT INTO users (telegram_id, expiry)
         VALUES ($1, $2)
         ON CONFLICT (telegram_id)
         DO UPDATE SET expiry=$2
-      `, [userId, expiry])
+      `,
+        [userId, expiry]
+      )
 
       // ===== SEND LINK =====
-      await bot.api.sendMessage(userId, `✅ Payment confirmed\n\n🔗 ${link.invite_link}`)
+      await bot.api.sendMessage(
+        userId,
+        `✅ Payment confirmed\n\n🔗 ${invite.invite_link}`
+      )
 
       console.log("✅ LINK SENT:", userId)
     }
 
     res.sendStatus(200)
-
   } catch (err) {
-    console.error(err)
+    console.error("PAYPAL ERROR:", err)
     res.sendStatus(500)
   }
 })
@@ -152,27 +173,33 @@ setInterval(async () => {
         )
 
         console.log("🚫 Kicked:", user.telegram_id)
-      } catch (e) {}
+      } catch (e) {
+        console.log("Kick error:", e.message)
+      }
     }
-
   } catch (err) {
-    console.error(err)
+    console.error("Auto-kick error:", err)
   }
 }, 60000)
 
-// ===== WEBHOOK =====
-app.post(`/bot${BOT_TOKEN}`, (req, res) => {
-  bot.handleUpdate(req.body)
-  res.sendStatus(200)
+// ===== TELEGRAM WEBHOOK =====
+app.post("/webhook", (req, res) => {
+  try {
+    bot.handleUpdate(req.body)
+    res.sendStatus(200)
+  } catch (err) {
+    console.error("Webhook error:", err)
+    res.sendStatus(500)
+  }
 })
 
 // ===== START SERVER =====
 const PORT = process.env.PORT || 8080
 
 app.listen(PORT, async () => {
-  console.log("Server running")
+  console.log("🚀 Server running")
 
-  await bot.api.setWebhook(`${BASE_URL}/bot${BOT_TOKEN}`)
+  await bot.api.setWebhook(`${BASE_URL}/webhook`)
 
-  console.log("Webhook set:", `${BASE_URL}/bot${BOT_TOKEN}`)
+  console.log("✅ Webhook set:", `${BASE_URL}/webhook`)
 })
