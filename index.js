@@ -11,7 +11,17 @@ const ADMIN_ID = process.env.ADMIN_ID
 const CHANNEL_ID = process.env.CHANNEL_ID
 
 // =====================
-// DEBUG LOGGER (KEEP)
+// TEMP STORAGE (IN-MEMORY)
+// =====================
+const activeUsers = new Map() // userId -> expiry timestamp
+
+// =====================
+// BASE URL (HARD FIX)
+// =====================
+const BASE_URL = "https://perceptive-empathy-production-18c6.up.railway.app"
+
+// =====================
+// DEBUG LOGGER
 // =====================
 bot.use((ctx, next) => {
   console.log("UPDATE:", JSON.stringify(ctx.update))
@@ -19,7 +29,7 @@ bot.use((ctx, next) => {
 })
 
 // =====================
-// START COMMAND
+// START
 // =====================
 bot.command("start", async (ctx) => {
   await ctx.reply(
@@ -28,10 +38,21 @@ bot.command("start", async (ctx) => {
 })
 
 // =====================
-// ACCESS COMMAND
+// ACCESS (REAL CHECK)
 // =====================
 bot.command("access", async (ctx) => {
-  await ctx.reply("❌ Access expired or not active.")
+  const userId = ctx.from.id
+  const now = Date.now()
+
+  const expiry = activeUsers.get(userId)
+
+  if (expiry && expiry > now) {
+    const minutesLeft = Math.ceil((expiry - now) / 60000)
+
+    await ctx.reply(`✅ Access active\n⏳ ${minutesLeft} min remaining`)
+  } else {
+    await ctx.reply("❌ Access expired or not active.")
+  }
 })
 
 // =====================
@@ -56,7 +77,7 @@ async function getPayPalToken() {
 }
 
 // =====================
-// CREATE ORDER (REAL)
+// CREATE ORDER
 // =====================
 app.post("/create-order", async (req, res) => {
   try {
@@ -84,8 +105,8 @@ app.post("/create-order", async (req, res) => {
             },
           ],
           application_context: {
-            return_url: `${process.env.RAILWAY_STATIC_URL || `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`}/success`,
-            cancel_url: `${process.env.RAILWAY_STATIC_URL || `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`}/cancel`,
+            return_url: `${BASE_URL}/success`,
+            cancel_url: `${BASE_URL}/cancel`,
           },
         }),
       }
@@ -96,7 +117,7 @@ app.post("/create-order", async (req, res) => {
     const approve = order.links?.find((l) => l.rel === "approve")
 
     if (!approve?.href) {
-      console.log("❌ PayPal order error:", order)
+      console.log("❌ PayPal error:", order)
       return res.status(500).json({ error: "No approval link" })
     }
 
@@ -108,7 +129,7 @@ app.post("/create-order", async (req, res) => {
 })
 
 // =====================
-// BUY COMMAND (FIXED)
+// BUY
 // =====================
 bot.command("buy", async (ctx) => {
   try {
@@ -121,18 +142,7 @@ bot.command("buy", async (ctx) => {
       `🛒 BUY CLICK\nUser: ${userId}\nName: ${ctx.from.first_name}`
     )
 
-    // ✅ FIX: always absolute URL
-    const baseUrl =
-      process.env.RAILWAY_STATIC_URL ||
-      `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-
-    console.log("BASE URL:", baseUrl)
-
-    if (!baseUrl) {
-      throw new Error("No base URL found")
-    }
-
-    const response = await fetch(`${baseUrl}/create-order`, {
+    const response = await fetch(`${BASE_URL}/create-order`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -143,7 +153,7 @@ bot.command("buy", async (ctx) => {
     const data = await response.json()
 
     if (!data.url) {
-      throw new Error("No PayPal URL returned")
+      throw new Error("No PayPal URL")
     }
 
     const keyboard = new InlineKeyboard().url("💰 Buy Access", data.url)
@@ -174,33 +184,41 @@ app.post("/paypal-webhook", async (req, res) => {
       return res.sendStatus(200)
     }
 
-    console.log("✅ PAYMENT FOR:", customId)
+    const userId = Number(customId)
+
+    console.log("✅ PAYMENT FOR:", userId)
+
+    // =====================
+    // GIVE ACCESS (5 MIN)
+    // =====================
+    const expiry = Date.now() + 5 * 60 * 1000
+    activeUsers.set(userId, expiry)
 
     await bot.api.sendMessage(
       ADMIN_ID,
-      `💰 Payment OK\nUser: ${customId}`
+      `💰 Payment OK\nUser: ${userId}`
     )
 
-    // GIVE ACCESS
-    await bot.api.unbanChatMember(CHANNEL_ID, Number(customId))
+    await bot.api.unbanChatMember(CHANNEL_ID, userId)
 
     await bot.api.sendMessage(
-      customId,
+      userId,
       "✅ Payment successful! You now have access."
     )
 
-    // 5 MIN ACCESS
+    // =====================
+    // AUTO REMOVE
+    // =====================
     setTimeout(async () => {
       try {
-        await bot.api.banChatMember(CHANNEL_ID, Number(customId))
-        await bot.api.unbanChatMember(CHANNEL_ID, Number(customId))
+        activeUsers.delete(userId)
 
-        await bot.api.sendMessage(
-          customId,
-          "❌ Access expired."
-        )
+        await bot.api.banChatMember(CHANNEL_ID, userId)
+        await bot.api.unbanChatMember(CHANNEL_ID, userId)
 
-        console.log("⛔ User kicked:", customId)
+        await bot.api.sendMessage(userId, "❌ Access expired.")
+
+        console.log("⛔ User kicked:", userId)
       } catch (e) {
         console.log("Kick error:", e)
       }
@@ -211,7 +229,7 @@ app.post("/paypal-webhook", async (req, res) => {
 })
 
 // =====================
-// SUCCESS / CANCEL ROUTES
+// SUCCESS / CANCEL
 // =====================
 app.get("/success", (req, res) => {
   res.send("✅ Payment received. You can return to Telegram.")
