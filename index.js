@@ -11,7 +11,7 @@ const ADMIN_ID = process.env.ADMIN_ID
 const CHANNEL_ID = process.env.CHANNEL_ID
 
 // =====================
-// DEBUG LOGGER (KEEP)
+// DEBUG LOGGER
 // =====================
 bot.use((ctx, next) => {
   console.log("UPDATE:", JSON.stringify(ctx.update))
@@ -19,7 +19,7 @@ bot.use((ctx, next) => {
 })
 
 // =====================
-// START COMMAND
+// START
 // =====================
 bot.command("start", async (ctx) => {
   await ctx.reply(
@@ -28,7 +28,7 @@ bot.command("start", async (ctx) => {
 })
 
 // =====================
-// ACCESS COMMAND
+// ACCESS
 // =====================
 bot.command("access", async (ctx) => {
   await ctx.reply("❌ Access expired or not active.")
@@ -56,75 +56,71 @@ async function getPayPalToken() {
 }
 
 // =====================
-// CREATE ORDER (REAL)
-// =====================
-app.post("/create-order", async (req, res) => {
-  const { userId } = req.body
-
-  const token = await getPayPalToken()
-
-  const orderRes = await fetch(
-    `${process.env.PAYPAL_API}/v2/checkout/orders`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        intent: "CAPTURE",
-        purchase_units: [
-          {
-            amount: {
-              currency_code: "USD",
-              value: "10.00",
-            },
-            custom_id: String(userId),
-          },
-        ],
-        application_context: {
-          return_url: "https://example.com/success",
-          cancel_url: "https://example.com/cancel",
-        },
-      }),
-    }
-  )
-
-  const order = await orderRes.json()
-  const approve = order.links.find((l) => l.rel === "approve")
-
-  res.json({ url: approve.href })
-})
-
-// =====================
-// BUY COMMAND
+// BUY (FIXED)
 // =====================
 bot.command("buy", async (ctx) => {
-  const userId = ctx.from.id
+  try {
+    const userId = ctx.from.id
+    const name = ctx.from.first_name || "Unknown"
 
-  console.log("BUY:", userId)
+    console.log("BUY:", userId)
 
-  await bot.api.sendMessage(
-    ADMIN_ID,
-    `🛒 BUY CLICK\nUser: ${userId}\nName: ${ctx.from.first_name}`
-  )
+    // Notify admin
+    await bot.api.sendMessage(
+      ADMIN_ID,
+      `🛒 BUY CLICK\nUser: ${userId}\nName: ${name}`
+    )
 
-  const response = await fetch(
-    `${process.env.RAILWAY_STATIC_URL}/create-order`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userId }),
+    // Get PayPal token
+    const token = await getPayPalToken()
+
+    // Create order DIRECTLY (no internal fetch)
+    const orderRes = await fetch(
+      `${process.env.PAYPAL_API}/v2/checkout/orders`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          intent: "CAPTURE",
+          purchase_units: [
+            {
+              amount: {
+                currency_code: "USD",
+                value: "10.00",
+              },
+              custom_id: String(userId),
+            },
+          ],
+          application_context: {
+            return_url: "https://example.com/success",
+            cancel_url: "https://example.com/cancel",
+          },
+        }),
+      }
+    )
+
+    const order = await orderRes.json()
+
+    const approve = order.links.find((l) => l.rel === "approve")
+
+    if (!approve || !approve.href) {
+      console.error("❌ PayPal link missing", order)
+      return ctx.reply("❌ Payment error. Try again.")
     }
-  )
 
-  const data = await response.json()
+    const keyboard = new InlineKeyboard().url("💰 Buy Access", approve.href)
 
-  const keyboard = new InlineKeyboard().url("💰 Buy Access", data.url)
+    await ctx.reply("Click below to subscribe:", {
+      reply_markup: keyboard,
+    })
 
-  await ctx.reply("Click below to subscribe:", {
-    reply_markup: keyboard,
-  })
+  } catch (err) {
+    console.error("BUY ERROR:", err)
+    await ctx.reply("❌ Something went wrong.")
+  }
 })
 
 // =====================
@@ -159,9 +155,7 @@ app.post("/paypal-webhook", async (req, res) => {
       "✅ Payment successful! You now have access."
     )
 
-    // =====================
-    // 5 MINUTES ACCESS
-    // =====================
+    // ⏱ 5 MINUTES ACCESS
     setTimeout(async () => {
       try {
         await bot.api.banChatMember(CHANNEL_ID, Number(customId))
@@ -176,14 +170,14 @@ app.post("/paypal-webhook", async (req, res) => {
       } catch (e) {
         console.log("Kick error:", e)
       }
-    }, 5 * 60 * 1000) // 5 minutes
+    }, 5 * 60 * 1000)
   }
 
   res.sendStatus(200)
 })
 
 // =====================
-// TELEGRAM WEBHOOK ROUTE (FIXED)
+// TELEGRAM WEBHOOK
 // =====================
 await bot.init()
 
