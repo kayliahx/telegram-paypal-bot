@@ -1,191 +1,154 @@
 import express from "express"
 import { Bot } from "grammy"
-import fetch from "node-fetch"
 import pkg from "pg"
 
 const { Pool } = pkg
 
-// ===== ENV =====
-const BOT_TOKEN = process.env.BOT_TOKEN
-const BASE_URL = process.env.BASE_URL
-const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID
-const PAYPAL_SECRET = process.env.PAYPAL_SECRET
-const CHANNEL_ID = process.env.CHANNEL_ID
+const app = express()
+app.use(express.json())
 
-if (!BOT_TOKEN || !BASE_URL) {
-  throw new Error("Missing required environment variables")
+// ================= CONFIG =================
+const BOT_TOKEN = process.env.BOT_TOKEN
+const CHANNEL_ID = process.env.CHANNEL_ID
+const BASE_URL = process.env.BASE_URL
+  ? process.env.BASE_URL.replace("https://", "")
+  : null
+
+if (!BOT_TOKEN || !CHANNEL_ID || !BASE_URL) {
+  throw new Error("❌ Missing environment variables")
 }
 
-// ===== SETUP =====
 const bot = new Bot(BOT_TOKEN)
-const app = express()
-
-app.use(express.json())
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 })
 
-// ===== START COMMAND =====
+// ================= PAYPAL VERIFY =================
+async function verifyPayPalPayment(captureId) {
+  const auth = Buffer.from(
+    `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
+  ).toString("base64")
+
+  const res = await fetch(
+    `https://api-m.paypal.com/v2/payments/captures/${captureId}`,
+    {
+      headers: {
+        Authorization: `Basic ${auth}`
+      }
+    }
+  )
+
+  const data = await res.json()
+
+  if (data.status !== "COMPLETED") return null
+
+  return data
+}
+
+// ================= COMMANDS =================
 bot.command("start", async (ctx) => {
-  await ctx.reply("Welcome 💎\n\nUse /buy or /access")
+  await ctx.reply(
+    "Welcome 💎\n\nUse /buy to subscribe or /access to check your status."
+  )
 })
 
-// ===== BUY COMMAND =====
 bot.command("buy", async (ctx) => {
   try {
     const userId = ctx.from.id
 
-    const order = await fetch("https://api-m.paypal.com/v2/checkout/orders", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization:
-          "Basic " +
-          Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`).toString("base64")
-      },
-      body: JSON.stringify({
-        intent: "CAPTURE",
-        purchase_units: [
-          {
-            amount: {
-              currency_code: "EUR",
-              value: "0.20"
-            },
-            custom_id: userId.toString()
-          }
-        ]
-      })
-    })
+    const link = `https://${BASE_URL}/create-payment?userId=${userId}`
 
-    const data = await order.json()
-
-    const approveLink = data.links?.find((l) => l.rel === "approve")?.href
-
-    if (!approveLink) {
-      throw new Error("No PayPal approval link")
-    }
-
-    await ctx.reply("Click below to pay:", {
-      reply_markup: {
-        inline_keyboard: [[{ text: "💰 Buy Access", url: approveLink }]]
-      }
-    })
+    await ctx.reply(`💳 Click to pay:\n${link}`)
   } catch (err) {
-    console.error("BUY ERROR:", err)
+    console.error(err)
     await ctx.reply("❌ Error generating payment link. Try again.")
   }
 })
 
-// ===== ACCESS CHECK =====
 bot.command("access", async (ctx) => {
-  try {
-    const userId = ctx.from.id
+  const userId = ctx.from.id
 
-    const result = await pool.query(
-      "SELECT * FROM users WHERE telegram_id=$1",
-      [userId]
-    )
+  const result = await pool.query(
+    "SELECT expiry FROM users WHERE telegram_id = $1",
+    [userId]
+  )
 
-    if (result.rows.length === 0) {
-      return ctx.reply("❌ No access found")
-    }
-
-    const user = result.rows[0]
-
-    if (new Date(user.expiry) < new Date()) {
-      return ctx.reply("❌ Your access expired")
-    }
-
-    return ctx.reply("✅ You have access")
-  } catch (err) {
-    console.error(err)
-    ctx.reply("❌ Error checking access")
+  if (!result.rows.length) {
+    return ctx.reply("❌ No active subscription.")
   }
+
+  const expiry = result.rows[0].expiry
+
+  if (new Date(expiry) < new Date()) {
+    return ctx.reply("❌ Subscription expired.")
+  }
+
+  ctx.reply("✅ You have access.")
 })
 
-// ===== PAYPAL WEBHOOK =====
+// ================= PAYPAL WEBHOOK =================
 app.post("/paypal-webhook", async (req, res) => {
   try {
     const event = req.body
 
-    if (event.event_type === "PAYMENT.CAPTURE.COMPLETED") {
-      const userId = event.resource?.custom_id
-
-      if (!userId) {
-        console.log("❌ Missing custom_id")
-        return res.sendStatus(200)
-      }
-
-      console.log("💰 PAYMENT SUCCESS:", userId)
-
-      // ===== CREATE INVITE LINK =====
-      const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
-        member_limit: 1,
-        expire_date: Math.floor(Date.now() / 1000) + 3600 // 1 hour
-      })
-
-      // ===== SAVE USER =====
-      const expiry = new Date(Date.now() + 24 * 60 * 60 * 1000)
-
-      await pool.query(
-        `
-        INSERT INTO users (telegram_id, expiry)
-        VALUES ($1, $2)
-        ON CONFLICT (telegram_id)
-        DO UPDATE SET expiry=$2
-      `,
-        [userId, expiry]
-      )
-
-      // ===== SEND LINK =====
-      await bot.api.sendMessage(
-        userId,
-        `✅ Payment confirmed\n\n🔗 ${invite.invite_link}`
-      )
-
-      console.log("✅ LINK SENT:", userId)
+    if (event.event_type !== "PAYMENT.CAPTURE.COMPLETED") {
+      return res.sendStatus(200)
     }
 
-    res.sendStatus(200)
-  } catch (err) {
-    console.error("PAYPAL ERROR:", err)
-    res.sendStatus(500)
-  }
-})
+    const captureId = event.resource?.id
+    const userId = event.resource?.custom_id
 
-// ===== AUTO KICK EXPIRED USERS =====
-setInterval(async () => {
-  try {
-    const result = await pool.query(
-      "SELECT * FROM users WHERE expiry < NOW()"
+    if (!captureId || !userId) {
+      return res.sendStatus(200)
+    }
+
+    // 🔐 VERIFY PAYMENT
+    const verified = await verifyPayPalPayment(captureId)
+
+    if (!verified) {
+      console.log("❌ Fake payment blocked")
+      return res.sendStatus(200)
+    }
+
+    // 🔒 CHECK AMOUNT (€0.20)
+    if (
+      verified.amount.value !== "0.20" ||
+      verified.amount.currency_code !== "EUR"
+    ) {
+      console.log("❌ Wrong amount")
+      return res.sendStatus(200)
+    }
+
+    console.log("✅ VERIFIED PAYMENT:", userId)
+
+    // 🎟 CREATE SINGLE USE LINK
+    const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
+      member_limit: 1,
+      expire_date: Math.floor(Date.now() / 1000) + 3600
+    })
+
+    // 📅 SAVE EXPIRY (24h)
+    const expiry = new Date(Date.now() + 86400000)
+
+    await pool.query(
+      `
+      INSERT INTO users (telegram_id, expiry)
+      VALUES ($1, $2)
+      ON CONFLICT (telegram_id)
+      DO UPDATE SET expiry=$2
+    `,
+      [userId, expiry]
     )
 
-    for (const user of result.rows) {
-      try {
-        await bot.api.banChatMember(CHANNEL_ID, user.telegram_id)
-        await bot.api.unbanChatMember(CHANNEL_ID, user.telegram_id)
+    await bot.api.sendMessage(
+      userId,
+      `✅ Payment confirmed\n\n${invite.invite_link}`
+    )
 
-        await pool.query(
-          "DELETE FROM users WHERE telegram_id=$1",
-          [user.telegram_id]
-        )
+    console.log("🔗 LINK SENT:", userId)
 
-        console.log("🚫 Kicked:", user.telegram_id)
-      } catch (e) {
-        console.log("Kick error:", e.message)
-      }
-    }
-  } catch (err) {
-    console.error("Auto-kick error:", err)
-  }
-}, 60000)
-
-// ===== TELEGRAM WEBHOOK =====
-app.post("/webhook", (req, res) => {
-  try {
-    bot.handleUpdate(req.body)
     res.sendStatus(200)
   } catch (err) {
     console.error("Webhook error:", err)
@@ -193,13 +156,52 @@ app.post("/webhook", (req, res) => {
   }
 })
 
-// ===== START SERVER =====
-const PORT = process.env.PORT || 8080
+// ================= TELEGRAM WEBHOOK =================
+app.use(`/${BOT_TOKEN}`, (req, res) => {
+  bot.handleUpdate(req.body)
+  res.sendStatus(200)
+})
+
+// ================= AUTO KICK =================
+setInterval(async () => {
+  try {
+    const expired = await pool.query(
+      "SELECT telegram_id FROM users WHERE expiry < NOW()"
+    )
+
+    for (const user of expired.rows) {
+      try {
+        await bot.api.banChatMember(CHANNEL_ID, user.telegram_id)
+        await bot.api.unbanChatMember(CHANNEL_ID, user.telegram_id)
+        console.log("🚫 Kicked:", user.telegram_id)
+      } catch (e) {}
+    }
+  } catch (err) {
+    console.error("Auto-kick error:", err)
+  }
+}, 60000)
+
+// ================= PREVENT LINK SHARING =================
+bot.on("message:text", async (ctx) => {
+  const text = ctx.message.text
+
+  if (text.includes("t.me/") || text.includes("telegram.me")) {
+    try {
+      await ctx.deleteMessage()
+    } catch (e) {}
+  }
+})
+
+// ================= START SERVER =================
+const PORT = process.env.PORT || 3000
 
 app.listen(PORT, async () => {
   console.log("🚀 Server running")
 
-  await bot.api.setWebhook(`${BASE_URL}/webhook`)
-
-  console.log("✅ Webhook set:", `${BASE_URL}/webhook`)
+  try {
+    await bot.api.setWebhook(`https://${BASE_URL}/${BOT_TOKEN}`)
+    console.log("✅ Webhook set")
+  } catch (err) {
+    console.log("⚠️ Webhook already set or rate limited")
+  }
 })
