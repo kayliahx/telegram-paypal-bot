@@ -414,8 +414,9 @@ app.post("/paypal-webhook", async (req, res) => {
       }
     )
 
+    // ================= 30 DAYS ACCESS =================
     const expiry = new Date(
-      Date.now() + 5 * 60 * 1000
+      Date.now() + 30 * 24 * 60 * 60 * 1000
     )
 
     await pool.query(
@@ -430,13 +431,13 @@ app.post("/paypal-webhook", async (req, res) => {
 
     await bot.api.sendMessage(
       realUserId,
-      `✅ Payment confirmed!\n\n🎟 Private channel link:\n${invite.invite_link}\n\n⚠️ Link expires in 5 minutes.`
+      `✅ Payment confirmed!\n\n🎟 Private channel link:\n${invite.invite_link}\n\n⚠️ Link expires in 5 minutes.\n\n✅ Subscription active for 30 days.`
     )
 
     console.log("🔗 LINK SENT:", realUserId)
 
     await notifyAdmin(
-      `🔗 LINK SENT\n\nUser ID: ${realUserId}\nTest access: 5 minutes`
+      `🔗 LINK SENT\n\nUser ID: ${realUserId}\nSubscription: 30 days`
     )
 
     return res.sendStatus(200)
