@@ -29,6 +29,13 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 })
 
+// ================= CREATE PAYMENTS TABLE =================
+await pool.query(`
+CREATE TABLE IF NOT EXISTS payments (
+  payment_id TEXT PRIMARY KEY
+)
+`)
+
 // ================= ADMIN NOTIFICATIONS =================
 async function notifyAdmin(message) {
   try {
@@ -363,6 +370,30 @@ app.post("/paypal-webhook", async (req, res) => {
 
     const realUserId = verified.custom_id
 
+    const paymentId = verified.id
+
+    const existingPayment = await pool.query(
+      `
+      SELECT *
+      FROM payments
+      WHERE payment_id = $1
+      `,
+      [paymentId]
+    )
+
+    if (existingPayment.rows.length) {
+      console.log("⚠️ DUPLICATE WEBHOOK BLOCKED")
+      return res.sendStatus(200)
+    }
+
+    await pool.query(
+      `
+      INSERT INTO payments (payment_id)
+      VALUES ($1)
+      `,
+      [paymentId]
+    )
+
     if (!realUserId) {
       console.log("❌ No user ID found")
       return res.sendStatus(200)
@@ -374,24 +405,6 @@ app.post("/paypal-webhook", async (req, res) => {
       `✅ PAYMENT RECEIVED\n\nUser ID: ${realUserId}\nAmount: €0.50`
     )
 
-    // ================= 5 MINUTE TEST ACCESS =================
-    const expiry = new Date(
-      Date.now() + 5 * 60 * 1000
-    )
-
-    await pool.query(
-      `
-      INSERT INTO users (user_id, telegram_id, expiry)
-      VALUES ($1, $2, $3)
-      ON CONFLICT (user_id)
-      DO UPDATE SET
-        telegram_id = EXCLUDED.telegram_id,
-        expiry = EXCLUDED.expiry
-      `,
-      [realUserId, realUserId, expiry]
-    )
-
-    // CREATE TEMPORARY UNIQUE INVITE LINK
     const invite = await bot.api.createChatInviteLink(
       CHANNEL_ID,
       {
@@ -401,7 +414,20 @@ app.post("/paypal-webhook", async (req, res) => {
       }
     )
 
-    // SEND INVITE LINK
+    const expiry = new Date(
+      Date.now() + 5 * 60 * 1000
+    )
+
+    await pool.query(
+      `
+      INSERT INTO users (telegram_id, expiry)
+      VALUES ($1, $2)
+      ON CONFLICT (telegram_id)
+      DO UPDATE SET expiry = EXCLUDED.expiry
+      `,
+      [realUserId, expiry]
+    )
+
     await bot.api.sendMessage(
       realUserId,
       `✅ Payment confirmed!\n\n🎟 Private channel link:\n${invite.invite_link}\n\n⚠️ Link expires in 5 minutes.`
@@ -483,6 +509,15 @@ setInterval(async () => {
         await notifyAdmin(
           `🚫 USER REMOVED\n\nUser ID: ${user.telegram_id}`
         )
+
+        await pool.query(
+          `
+          DELETE FROM users
+          WHERE telegram_id = $1
+          `,
+          [user.telegram_id]
+        )
+
       } catch (e) {
         console.log(
           "Kick error:",
