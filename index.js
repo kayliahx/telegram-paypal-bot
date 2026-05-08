@@ -374,6 +374,23 @@ app.post("/paypal-webhook", async (req, res) => {
       `✅ PAYMENT RECEIVED\n\nUser ID: ${realUserId}\nAmount: €0.50`
     )
 
+    // ================= 5 MINUTE TEST ACCESS =================
+    const expiry = new Date(
+      Date.now() + 5 * 60 * 1000
+    )
+
+    await pool.query(
+      `
+      INSERT INTO users (user_id, telegram_id, expiry)
+      VALUES ($1, $2, $3)
+      ON CONFLICT (user_id)
+      DO UPDATE SET
+        telegram_id = EXCLUDED.telegram_id,
+        expiry = EXCLUDED.expiry
+      `,
+      [realUserId, realUserId, expiry]
+    )
+
     // CREATE TEMPORARY UNIQUE INVITE LINK
     const invite = await bot.api.createChatInviteLink(
       CHANNEL_ID,
@@ -382,21 +399,6 @@ app.post("/paypal-webhook", async (req, res) => {
         expire_date:
           Math.floor(Date.now() / 1000) + 300
       }
-    )
-
-    // ================= 5 MINUTE TEST ACCESS =================
-    const expiry = new Date(
-      Date.now() + 5 * 60 * 1000
-    )
-
-    await pool.query(
-      `
-      INSERT INTO users (telegram_id, expiry)
-      VALUES ($1, $2)
-      ON CONFLICT (telegram_id)
-      DO UPDATE SET expiry = EXCLUDED.expiry
-      `,
-      [realUserId, expiry]
     )
 
     // SEND INVITE LINK
