@@ -68,24 +68,29 @@ bot.command("buy", async (ctx) => {
 })
 
 bot.command("access", async (ctx) => {
-  const userId = ctx.from.id
+  try {
+    const userId = ctx.from.id
 
-  const result = await pool.query(
-    "SELECT expiry FROM users WHERE telegram_id = $1",
-    [userId]
-  )
+    const result = await pool.query(
+      "SELECT expiry FROM users WHERE user_id = $1",
+      [userId]
+    )
 
-  if (!result.rows.length) {
-    return ctx.reply("❌ No active subscription.")
+    if (!result.rows.length) {
+      return ctx.reply("❌ No active subscription.")
+    }
+
+    const expiry = result.rows[0].expiry
+
+    if (new Date(expiry) < new Date()) {
+      return ctx.reply("❌ Subscription expired.")
+    }
+
+    ctx.reply("✅ You have access.")
+  } catch (err) {
+    console.error(err)
+    ctx.reply("❌ Error checking access.")
   }
-
-  const expiry = result.rows[0].expiry
-
-  if (new Date(expiry) < new Date()) {
-    return ctx.reply("❌ Subscription expired.")
-  }
-
-  ctx.reply("✅ You have access.")
 })
 
 // ================= PAYPAL WEBHOOK =================
@@ -98,7 +103,7 @@ app.post("/paypal-webhook", async (req, res) => {
     }
 
     const captureId = event.resource?.id
-    const userId = event.resource?.custom_id
+    const userId = Number(event.resource?.custom_id)
 
     if (!captureId || !userId) {
       return res.sendStatus(200)
@@ -121,12 +126,33 @@ app.post("/paypal-webhook", async (req, res) => {
       return res.sendStatus(200)
     }
 
+    // 🔒 PREVENT DUPLICATE PAYMENTS
+    const existingPayment = await pool.query(
+      "SELECT * FROM payments WHERE payment_id = $1",
+      [captureId]
+    )
+
+    if (existingPayment.rows.length > 0) {
+      console.log("❌ Duplicate payment blocked")
+      return res.sendStatus(200)
+    }
+
+    // 💾 SAVE PAYMENT
+    await pool.query(
+      `
+      INSERT INTO payments (payment_id, user_id)
+      VALUES ($1, $2)
+      `,
+      [captureId, userId]
+    )
+
     console.log("✅ VERIFIED PAYMENT:", userId)
 
     // 🎟 CREATE SINGLE USE LINK
     const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
       member_limit: 1,
-      expire_date: Math.floor(Date.now() / 1000) + 3600
+      expire_date: Math.floor(Date.now() / 1000) + 3600,
+      creates_join_request: false
     })
 
     // 📅 SAVE EXPIRY (24h)
@@ -134,11 +160,11 @@ app.post("/paypal-webhook", async (req, res) => {
 
     await pool.query(
       `
-      INSERT INTO users (telegram_id, expiry)
+      INSERT INTO users (user_id, expiry)
       VALUES ($1, $2)
-      ON CONFLICT (telegram_id)
-      DO UPDATE SET expiry=$2
-    `,
+      ON CONFLICT (user_id)
+      DO UPDATE SET expiry = EXCLUDED.expiry
+      `,
       [userId, expiry]
     )
 
@@ -150,6 +176,7 @@ app.post("/paypal-webhook", async (req, res) => {
     console.log("🔗 LINK SENT:", userId)
 
     res.sendStatus(200)
+
   } catch (err) {
     console.error("Webhook error:", err)
     res.sendStatus(500)
@@ -157,8 +184,13 @@ app.post("/paypal-webhook", async (req, res) => {
 })
 
 // ================= TELEGRAM WEBHOOK =================
-app.use(`/${BOT_TOKEN}`, (req, res) => {
-  bot.handleUpdate(req.body)
+app.use(`/${BOT_TOKEN}`, async (req, res) => {
+  try {
+    await bot.handleUpdate(req.body)
+  } catch (err) {
+    console.error("Telegram webhook error:", err)
+  }
+
   res.sendStatus(200)
 })
 
@@ -166,15 +198,25 @@ app.use(`/${BOT_TOKEN}`, (req, res) => {
 setInterval(async () => {
   try {
     const expired = await pool.query(
-      "SELECT telegram_id FROM users WHERE expiry < NOW()"
+      "SELECT user_id FROM users WHERE expiry < NOW()"
     )
 
     for (const user of expired.rows) {
       try {
-        await bot.api.banChatMember(CHANNEL_ID, user.telegram_id)
-        await bot.api.unbanChatMember(CHANNEL_ID, user.telegram_id)
-        console.log("🚫 Kicked:", user.telegram_id)
-      } catch (e) {}
+        await bot.api.banChatMember(CHANNEL_ID, user.user_id)
+        await bot.api.unbanChatMember(CHANNEL_ID, user.user_id)
+
+        console.log("🚫 Kicked:", user.user_id)
+
+        // 🗑 REMOVE EXPIRED USER
+        await pool.query(
+          "DELETE FROM users WHERE user_id = $1",
+          [user.user_id]
+        )
+
+      } catch (e) {
+        console.log("Kick error:", e.message)
+      }
     }
   } catch (err) {
     console.error("Auto-kick error:", err)
@@ -183,13 +225,22 @@ setInterval(async () => {
 
 // ================= PREVENT LINK SHARING =================
 bot.on("message:text", async (ctx) => {
-  const text = ctx.message.text
+  try {
+    const text = ctx.message.text || ""
 
-  if (text.includes("t.me/") || text.includes("telegram.me")) {
-    try {
+    if (
+      text.includes("t.me/") ||
+      text.includes("telegram.me") ||
+      text.includes("joinchat")
+    ) {
       await ctx.deleteMessage()
-    } catch (e) {}
-  }
+    }
+  } catch (e) {}
+})
+
+// ================= HEALTH CHECK =================
+app.get("/", (req, res) => {
+  res.send("Bot running")
 })
 
 // ================= START SERVER =================
@@ -199,9 +250,14 @@ app.listen(PORT, async () => {
   console.log("🚀 Server running")
 
   try {
-    await bot.api.setWebhook(`https://${BASE_URL}/${BOT_TOKEN}`)
-    console.log("✅ Webhook set")
+    const webhookUrl = `https://${BASE_URL}/${BOT_TOKEN}`
+
+    await bot.api.setWebhook(webhookUrl)
+
+    console.log("✅ Webhook set:", webhookUrl)
+
   } catch (err) {
     console.log("⚠️ Webhook already set or rate limited")
+    console.log(err.message)
   }
 })
