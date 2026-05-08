@@ -1,5 +1,5 @@
 import express from "express"
-import { Bot } from "grammy"
+import { Bot, InlineKeyboard } from "grammy"
 import pkg from "pg"
 
 const { Pool } = pkg
@@ -29,14 +29,14 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 })
 
-// ================= ADMIN NOTIFY =================
+// ================= ADMIN NOTIFICATIONS =================
 async function notifyAdmin(message) {
   try {
     if (!ADMIN_ID) return
 
     await bot.api.sendMessage(ADMIN_ID, message)
   } catch (err) {
-    console.log("Admin notification error:", err.message)
+    console.log("Admin notification failed")
   }
 }
 
@@ -64,24 +64,31 @@ async function verifyPayPalPayment(captureId) {
 
     const accessToken = tokenData.access_token
 
+    if (!accessToken) {
+      console.log("❌ No PayPal access token")
+      return null
+    }
+
     // VERIFY PAYMENT
     const res = await fetch(
       `https://api-m.paypal.com/v2/payments/captures/${captureId}`,
       {
         headers: {
-          Authorization: `Bearer ${accessToken}`
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
         }
       }
     )
 
     const data = await res.json()
 
+    console.log("🔍 PAYPAL VERIFY:", JSON.stringify(data, null, 2))
+
     if (data.status !== "COMPLETED") {
       return null
     }
 
     return data
-
   } catch (err) {
     console.log("PayPal verify error:", err)
     return null
@@ -98,37 +105,27 @@ bot.command("start", async (ctx) => {
 bot.command("buy", async (ctx) => {
   try {
     const userId = ctx.from.id
-
-    const username = ctx.from.username
-      ? `@${ctx.from.username}`
-      : "No username"
-
+    const username = ctx.from.username || "no_username"
     const firstName = ctx.from.first_name || "Unknown"
 
-    const link = `https://${BASE_URL}/create-payment?userId=${userId}`
-
-    console.log("💳 BUY CLICK:", userId)
-
+    // ADMIN NOTIFICATION
     await notifyAdmin(
-      `🛒 BUY CLICK\n\nUser ID: ${userId}\nName: ${firstName}\nUsername: ${username}`
+      `🛒 BUY CLICK\n\nUser ID: ${userId}\nUsername: @${username}\nName: ${firstName}`
     )
 
-    await ctx.reply("💳 Subscribe now:", {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            {
-              text: "💎 Pay €0.50",
-              url: link
-            }
-          ]
-        ]
-      }
-    })
+    const link = `https://${BASE_URL}/create-payment?userId=${userId}&username=${encodeURIComponent(username)}&name=${encodeURIComponent(firstName)}`
 
+    const keyboard = new InlineKeyboard().url(
+      "💳 PAY NOW",
+      link
+    )
+
+    await ctx.reply("💎 Click below to subscribe:", {
+      reply_markup: keyboard
+    })
   } catch (err) {
     console.error(err)
-    await ctx.reply("❌ Error generating payment link. Try again.")
+    await ctx.reply("❌ Error generating payment link.")
   }
 })
 
@@ -141,7 +138,7 @@ bot.command("access", async (ctx) => {
       SELECT expiry
       FROM users
       WHERE telegram_id = $1
-      `,
+    `,
       [userId]
     )
 
@@ -151,15 +148,14 @@ bot.command("access", async (ctx) => {
 
     const expiry = result.rows[0].expiry
 
-    if (new Date(expiry) < new Date()) {
+    if (!expiry || new Date(expiry) < new Date()) {
       return ctx.reply("❌ Subscription expired.")
     }
 
-    await ctx.reply("✅ You have access.")
-
+    return ctx.reply("✅ You have active access.")
   } catch (err) {
     console.log(err)
-    await ctx.reply("❌ Error checking access.")
+    return ctx.reply("❌ Error checking access.")
   }
 })
 
@@ -167,15 +163,16 @@ bot.command("access", async (ctx) => {
 app.get("/create-payment", async (req, res) => {
   try {
     const userId = req.query.userId
+    const username = req.query.username || "no_username"
+    const firstName = req.query.name || "Unknown"
 
     if (!userId) {
       return res.status(400).send("Missing user ID")
     }
 
-    console.log("🌐 PAYMENT PAGE OPENED:", userId)
-
+    // ADMIN NOTIFICATION
     await notifyAdmin(
-      `🌐 PAYMENT PAGE OPENED\n\nUser ID: ${userId}`
+      `🌐 PAYMENT PAGE OPENED\n\nUser ID: ${userId}\nUsername: @${username}\nName: ${firstName}`
     )
 
     const auth = Buffer.from(
@@ -198,6 +195,11 @@ app.get("/create-payment", async (req, res) => {
     const tokenData = await tokenRes.json()
 
     const accessToken = tokenData.access_token
+
+    if (!accessToken) {
+      console.log(tokenData)
+      return res.status(500).send("PayPal auth failed")
+    }
 
     // CREATE ORDER
     const orderRes = await fetch(
@@ -229,7 +231,9 @@ app.get("/create-payment", async (req, res) => {
 
     const orderData = await orderRes.json()
 
-    const approveLink = orderData.links.find(
+    console.log("🧾 PAYPAL ORDER:", JSON.stringify(orderData, null, 2))
+
+    const approveLink = orderData.links?.find(
       (l) => l.rel === "approve"
     )
 
@@ -239,27 +243,21 @@ app.get("/create-payment", async (req, res) => {
     }
 
     return res.redirect(approveLink.href)
-
   } catch (err) {
     console.error("Create payment error:", err)
     return res.status(500).send("Payment creation failed")
   }
 })
 
-// ================= SUCCESS PAGE =================
-app.get("/success", (req, res) => {
-  res.send("✅ Payment received. Return to Telegram.")
-})
-
-// ================= CANCEL PAGE =================
-app.get("/cancel", (req, res) => {
-  res.send("❌ Payment cancelled.")
-})
-
 // ================= PAYPAL WEBHOOK =================
 app.post("/paypal-webhook", async (req, res) => {
   try {
     const event = req.body
+
+    console.log("🔥 PAYPAL WEBHOOK RECEIVED")
+    console.log(JSON.stringify(event, null, 2))
+
+    await notifyAdmin("🔥 PAYPAL WEBHOOK RECEIVED")
 
     if (event.event_type !== "PAYMENT.CAPTURE.COMPLETED") {
       return res.sendStatus(200)
@@ -269,6 +267,7 @@ app.post("/paypal-webhook", async (req, res) => {
     const userId = event.resource?.custom_id
 
     if (!captureId || !userId) {
+      console.log("❌ Missing capture ID or user ID")
       return res.sendStatus(200)
     }
 
@@ -277,31 +276,44 @@ app.post("/paypal-webhook", async (req, res) => {
 
     if (!verified) {
       console.log("❌ Fake payment blocked")
+
+      await notifyAdmin(
+        `❌ FAKE PAYMENT BLOCKED\n\nUser ID: ${userId}`
+      )
+
       return res.sendStatus(200)
     }
 
-    // VERIFY PRICE
+    // VERIFY AMOUNT
     if (
-      verified.amount.value !== "0.50" ||
-      verified.amount.currency_code !== "EUR"
+      verified.amount?.value !== "0.50" ||
+      verified.amount?.currency_code !== "EUR"
     ) {
-      console.log("❌ Wrong payment amount")
+      console.log("❌ Wrong amount")
+
+      await notifyAdmin(
+        `❌ WRONG PAYMENT AMOUNT\n\nUser ID: ${userId}`
+      )
+
       return res.sendStatus(200)
     }
 
     console.log("✅ VERIFIED PAYMENT:", userId)
 
     await notifyAdmin(
-      `✅ PAYMENT RECEIVED\n\nUser ID: ${userId}\nAmount: €0.50`
+      `💰 PAYMENT RECEIVED\n\nUser ID: ${userId}\nAmount: €0.50`
     )
 
     // CREATE INVITE LINK (5 MINUTES)
-    const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
-      member_limit: 1,
-      expire_date: Math.floor(Date.now() / 1000) + 300
-    })
+    const invite = await bot.api.createChatInviteLink(
+      CHANNEL_ID,
+      {
+        member_limit: 1,
+        expire_date: Math.floor(Date.now() / 1000) + 300
+      }
+    )
 
-    // SAVE SUBSCRIPTION
+    // 24 HOURS ACCESS
     const expiry = new Date(Date.now() + 86400000)
 
     await pool.query(
@@ -309,29 +321,42 @@ app.post("/paypal-webhook", async (req, res) => {
       INSERT INTO users (telegram_id, expiry)
       VALUES ($1, $2)
       ON CONFLICT (telegram_id)
-      DO UPDATE SET expiry = $2
+      DO UPDATE SET expiry = EXCLUDED.expiry
       `,
       [userId, expiry]
     )
 
-    // SEND LINK
     await bot.api.sendMessage(
       userId,
-      `✅ Payment confirmed\n\n${invite.invite_link}`
+      `✅ Payment confirmed!\n\n🎟 Your private access link:\n${invite.invite_link}\n\n⚠️ Link expires in 5 minutes.`
     )
 
     console.log("🔗 LINK SENT:", userId)
 
     await notifyAdmin(
-      `🔗 INVITE SENT\n\nUser ID: ${userId}`
+      `🔗 INVITE LINK SENT\n\nUser ID: ${userId}`
     )
 
     return res.sendStatus(200)
-
   } catch (err) {
     console.error("Webhook error:", err)
+
+    await notifyAdmin(
+      `❌ WEBHOOK ERROR\n\n${err.message}`
+    )
+
     return res.sendStatus(500)
   }
+})
+
+// ================= SUCCESS PAGE =================
+app.get("/success", (req, res) => {
+  res.send("✅ Payment processed. Return to Telegram.")
+})
+
+// ================= CANCEL PAGE =================
+app.get("/cancel", (req, res) => {
+  res.send("❌ Payment cancelled.")
 })
 
 // ================= TELEGRAM WEBHOOK =================
@@ -339,9 +364,8 @@ app.post(`/${BOT_TOKEN}`, async (req, res) => {
   try {
     await bot.handleUpdate(req.body)
     res.sendStatus(200)
-
   } catch (err) {
-    console.log("Telegram webhook error:", err)
+    console.error("Telegram webhook error:", err)
     res.sendStatus(500)
   }
 })
@@ -353,7 +377,8 @@ setInterval(async () => {
       `
       SELECT telegram_id
       FROM users
-      WHERE expiry < NOW()
+      WHERE expiry IS NOT NULL
+      AND expiry < NOW()
       `
     )
 
@@ -371,11 +396,13 @@ setInterval(async () => {
 
         console.log("🚫 Kicked:", user.telegram_id)
 
+        await notifyAdmin(
+          `🚫 USER REMOVED\n\nUser ID: ${user.telegram_id}`
+        )
       } catch (e) {
         console.log("Kick error:", e.message)
       }
     }
-
   } catch (err) {
     console.error("Auto-kick error:", err)
   }
@@ -389,14 +416,16 @@ bot.on("message:text", async (ctx) => {
     if (
       text.includes("t.me/") ||
       text.includes("telegram.me") ||
-      text.includes("http://") ||
-      text.includes("https://")
+      text.includes("chat.whatsapp") ||
+      text.includes("onlyfans.com") ||
+      text.includes("discord.gg")
     ) {
       await ctx.deleteMessage()
 
-      console.log("🚫 Link deleted")
+      await notifyAdmin(
+        `🚫 LINK DELETED\n\nUser ID: ${ctx.from.id}`
+      )
     }
-
   } catch (e) {}
 })
 
@@ -407,15 +436,16 @@ app.listen(PORT, async () => {
   console.log("🚀 Server running")
 
   try {
-    await bot.api.setWebhook(
-      `https://${BASE_URL}/${BOT_TOKEN}`
-    )
+    const webhookUrl = `https://${BASE_URL}/${BOT_TOKEN}`
 
-    console.log(
-      `✅ Webhook set: https://${BASE_URL}/${BOT_TOKEN}`
-    )
+    await bot.api.setWebhook(webhookUrl)
 
+    console.log(`✅ Webhook set: ${webhookUrl}`)
+
+    await notifyAdmin(
+      `🚀 BOT STARTED\n\nWebhook:\n${webhookUrl}`
+    )
   } catch (err) {
-    console.log("⚠️ Webhook already set or rate limited")
+    console.log("⚠️ Webhook error:", err.message)
   }
 })
