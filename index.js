@@ -93,6 +93,92 @@ bot.command("access", async (ctx) => {
   }
 })
 
+// ================= CREATE PAYMENT ROUTE =================
+app.get("/create-payment", async (req, res) => {
+  try {
+    const userId = req.query.userId
+
+    if (!userId) {
+      return res.status(400).send("Missing user ID")
+    }
+
+    const auth = Buffer.from(
+      `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
+    ).toString("base64")
+
+    // GET ACCESS TOKEN
+    const tokenRes = await fetch(
+      "https://api-m.paypal.com/v1/oauth2/token",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Basic ${auth}`,
+          "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: "grant_type=client_credentials"
+      }
+    )
+
+    const tokenData = await tokenRes.json()
+
+    const accessToken = tokenData.access_token
+
+    // CREATE ORDER
+    const orderRes = await fetch(
+      "https://api-m.paypal.com/v2/checkout/orders",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          intent: "CAPTURE",
+          purchase_units: [
+            {
+              custom_id: userId,
+              amount: {
+                currency_code: "EUR",
+                value: "0.50"
+              }
+            }
+          ],
+          application_context: {
+            return_url: `https://${BASE_URL}/success`,
+            cancel_url: `https://${BASE_URL}/cancel`
+          }
+        })
+      }
+    )
+
+    const orderData = await orderRes.json()
+
+    const approveLink = orderData.links.find(
+      (l) => l.rel === "approve"
+    )
+
+    if (!approveLink) {
+      console.log(orderData)
+      return res.status(500).send("Failed to create PayPal link")
+    }
+
+    return res.redirect(approveLink.href)
+  } catch (err) {
+    console.error("Create payment error:", err)
+    return res.status(500).send("Payment creation failed")
+  }
+})
+
+// ================= SUCCESS PAGE =================
+app.get("/success", (req, res) => {
+  res.send("✅ Payment received. Return to Telegram.")
+})
+
+// ================= CANCEL PAGE =================
+app.get("/cancel", (req, res) => {
+  res.send("❌ Payment cancelled.")
+})
+
 // ================= PAYPAL WEBHOOK =================
 app.post("/paypal-webhook", async (req, res) => {
   try {
@@ -117,9 +203,9 @@ app.post("/paypal-webhook", async (req, res) => {
       return res.sendStatus(200)
     }
 
-    // 🔒 CHECK AMOUNT (€0.20)
+    // 🔒 CHECK AMOUNT (€0.50)
     if (
-      verified.amount.value !== "0.20" ||
+      verified.amount.value !== "0.50" ||
       verified.amount.currency_code !== "EUR"
     ) {
       console.log("❌ Wrong amount")
@@ -148,14 +234,14 @@ app.post("/paypal-webhook", async (req, res) => {
 
     console.log("✅ VERIFIED PAYMENT:", userId)
 
-    // 🎟 CREATE SINGLE USE LINK
+    // 🎟 CREATE SINGLE USE LINK (5 MINUTES)
     const invite = await bot.api.createChatInviteLink(CHANNEL_ID, {
       member_limit: 1,
-      expire_date: Math.floor(Date.now() / 1000) + 3600,
+      expire_date: Math.floor(Date.now() / 1000) + 300,
       creates_join_request: false
     })
 
-    // 📅 SAVE EXPIRY (24h)
+    // 📅 SAVE EXPIRY (24h ACCESS)
     const expiry = new Date(Date.now() + 86400000)
 
     await pool.query(
