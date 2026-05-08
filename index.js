@@ -329,6 +329,9 @@ app.get("/", (req, res) => {
   res.send("Bot running")
 })
 
+// ================= INIT BOT =================
+await bot.init()
+
 // ================= START SERVER =================
 const PORT = process.env.PORT || 3000
 
