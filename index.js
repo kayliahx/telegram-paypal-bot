@@ -47,7 +47,6 @@ async function verifyPayPalPayment(captureId) {
       `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
     ).toString("base64")
 
-    // GET ACCESS TOKEN
     const tokenRes = await fetch(
       "https://api-m.paypal.com/v1/oauth2/token",
       {
@@ -69,7 +68,6 @@ async function verifyPayPalPayment(captureId) {
       return null
     }
 
-    // VERIFY PAYMENT
     const res = await fetch(
       `https://api-m.paypal.com/v2/payments/captures/${captureId}`,
       {
@@ -111,7 +109,6 @@ bot.command("buy", async (ctx) => {
     const username = ctx.from.username || "no_username"
     const firstName = ctx.from.first_name || "Unknown"
 
-    // ADMIN NOTIFICATION
     await notifyAdmin(
       `🛒 BUY CLICK\n\nUser ID: ${userId}\nUsername: @${username}\nName: ${firstName}`
     )
@@ -180,7 +177,6 @@ app.get("/create-payment", async (req, res) => {
       return res.status(400).send("Missing user ID")
     }
 
-    // ADMIN NOTIFICATION
     await notifyAdmin(
       `🌐 PAYMENT PAGE OPENED\n\nUser ID: ${userId}\nUsername: @${username}\nName: ${firstName}`
     )
@@ -189,7 +185,6 @@ app.get("/create-payment", async (req, res) => {
       `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
     ).toString("base64")
 
-    // GET ACCESS TOKEN
     const tokenRes = await fetch(
       "https://api-m.paypal.com/v1/oauth2/token",
       {
@@ -211,7 +206,6 @@ app.get("/create-payment", async (req, res) => {
       return res.status(500).send("PayPal auth failed")
     }
 
-    // CREATE ORDER
     const orderRes = await fetch(
       "https://api-m.paypal.com/v2/checkout/orders",
       {
@@ -289,7 +283,6 @@ app.post("/paypal-webhook", async (req, res) => {
         `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
       ).toString("base64")
 
-      // GET ACCESS TOKEN
       const tokenRes = await fetch(
         "https://api-m.paypal.com/v1/oauth2/token",
         {
@@ -306,7 +299,6 @@ app.post("/paypal-webhook", async (req, res) => {
 
       const accessToken = tokenData.access_token
 
-      // CAPTURE PAYMENT
       const captureRes = await fetch(
         `https://api-m.paypal.com/v2/checkout/orders/${orderId}/capture`,
         {
@@ -344,7 +336,6 @@ app.post("/paypal-webhook", async (req, res) => {
       return res.sendStatus(200)
     }
 
-    // VERIFY PAYMENT
     const verified = await verifyPayPalPayment(captureId)
 
     if (!verified) {
@@ -357,7 +348,6 @@ app.post("/paypal-webhook", async (req, res) => {
       return res.sendStatus(200)
     }
 
-    // VERIFY AMOUNT
     if (
       verified.amount?.value !== "0.50" ||
       verified.amount?.currency_code !== "EUR"
@@ -384,7 +374,7 @@ app.post("/paypal-webhook", async (req, res) => {
       `✅ PAYMENT RECEIVED\n\nUser ID: ${realUserId}\nAmount: €0.50`
     )
 
-    // CREATE INVITE LINK
+    // CREATE TEMPORARY UNIQUE INVITE LINK
     const invite = await bot.api.createChatInviteLink(
       CHANNEL_ID,
       {
@@ -394,9 +384,9 @@ app.post("/paypal-webhook", async (req, res) => {
       }
     )
 
-    // SAVE SUBSCRIPTION
+    // ================= 5 MINUTE TEST ACCESS =================
     const expiry = new Date(
-      Date.now() + 86400000
+      Date.now() + 5 * 60 * 1000
     )
 
     await pool.query(
@@ -409,7 +399,7 @@ app.post("/paypal-webhook", async (req, res) => {
       [realUserId, expiry]
     )
 
-    // SEND INVITE
+    // SEND INVITE LINK
     await bot.api.sendMessage(
       realUserId,
       `✅ Payment confirmed!\n\n🎟 Private channel link:\n${invite.invite_link}\n\n⚠️ Link expires in 5 minutes.`
@@ -418,7 +408,7 @@ app.post("/paypal-webhook", async (req, res) => {
     console.log("🔗 LINK SENT:", realUserId)
 
     await notifyAdmin(
-      `🔗 LINK SENT\n\nUser ID: ${realUserId}`
+      `🔗 LINK SENT\n\nUser ID: ${realUserId}\nTest access: 5 minutes`
     )
 
     return res.sendStatus(200)
