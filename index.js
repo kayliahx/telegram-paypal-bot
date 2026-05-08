@@ -82,7 +82,10 @@ async function verifyPayPalPayment(captureId) {
 
     const data = await res.json()
 
-    console.log("🔍 PAYPAL VERIFY:", JSON.stringify(data, null, 2))
+    console.log(
+      "🔍 PAYPAL VERIFY:",
+      JSON.stringify(data, null, 2)
+    )
 
     if (data.status !== "COMPLETED") {
       return null
@@ -113,16 +116,23 @@ bot.command("buy", async (ctx) => {
       `🛒 BUY CLICK\n\nUser ID: ${userId}\nUsername: @${username}\nName: ${firstName}`
     )
 
-    const link = `https://${BASE_URL}/create-payment?userId=${userId}&username=${encodeURIComponent(username)}&name=${encodeURIComponent(firstName)}`
+    const link =
+      `https://${BASE_URL}/create-payment?` +
+      `userId=${userId}` +
+      `&username=${encodeURIComponent(username)}` +
+      `&name=${encodeURIComponent(firstName)}`
 
     const keyboard = new InlineKeyboard().url(
       "💳 PAY NOW",
       link
     )
 
-    await ctx.reply("💎 Click below to subscribe:", {
-      reply_markup: keyboard
-    })
+    await ctx.reply(
+      "💎 Click below to subscribe:",
+      {
+        reply_markup: keyboard
+      }
+    )
   } catch (err) {
     console.error(err)
     await ctx.reply("❌ Error generating payment link.")
@@ -138,7 +148,7 @@ bot.command("access", async (ctx) => {
       SELECT expiry
       FROM users
       WHERE telegram_id = $1
-    `,
+      `,
       [userId]
     )
 
@@ -214,7 +224,7 @@ app.get("/create-payment", async (req, res) => {
           intent: "CAPTURE",
           purchase_units: [
             {
-              custom_id: userId,
+              custom_id: String(userId),
               amount: {
                 currency_code: "EUR",
                 value: "0.50"
@@ -222,6 +232,7 @@ app.get("/create-payment", async (req, res) => {
             }
           ],
           application_context: {
+            user_action: "PAY_NOW",
             return_url: `https://${BASE_URL}/success`,
             cancel_url: `https://${BASE_URL}/cancel`
           }
@@ -231,7 +242,10 @@ app.get("/create-payment", async (req, res) => {
 
     const orderData = await orderRes.json()
 
-    console.log("🧾 PAYPAL ORDER:", JSON.stringify(orderData, null, 2))
+    console.log(
+      "🧾 PAYPAL ORDER:",
+      JSON.stringify(orderData, null, 2)
+    )
 
     const approveLink = orderData.links?.find(
       (l) => l.rel === "approve"
@@ -257,17 +271,76 @@ app.post("/paypal-webhook", async (req, res) => {
     console.log("🔥 PAYPAL WEBHOOK RECEIVED")
     console.log(JSON.stringify(event, null, 2))
 
-    await notifyAdmin("🔥 PAYPAL WEBHOOK RECEIVED")
+    await notifyAdmin(
+      `🔥 PAYPAL WEBHOOK\n\nType: ${event.event_type}`
+    )
 
+    // ================= ORDER APPROVED =================
+    if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
+      const orderId = event.resource?.id
+
+      if (!orderId) {
+        return res.sendStatus(200)
+      }
+
+      console.log("🟡 ORDER APPROVED:", orderId)
+
+      const auth = Buffer.from(
+        `${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`
+      ).toString("base64")
+
+      // GET ACCESS TOKEN
+      const tokenRes = await fetch(
+        "https://api-m.paypal.com/v1/oauth2/token",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Basic ${auth}`,
+            "Content-Type": "application/x-www-form-urlencoded"
+          },
+          body: "grant_type=client_credentials"
+        }
+      )
+
+      const tokenData = await tokenRes.json()
+
+      const accessToken = tokenData.access_token
+
+      // CAPTURE PAYMENT
+      const captureRes = await fetch(
+        `https://api-m.paypal.com/v2/checkout/orders/${orderId}/capture`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json"
+          }
+        }
+      )
+
+      const captureData = await captureRes.json()
+
+      console.log(
+        "💰 CAPTURE RESPONSE:",
+        JSON.stringify(captureData, null, 2)
+      )
+
+      await notifyAdmin(
+        `💰 PAYMENT CAPTURED\n\nOrder ID: ${orderId}`
+      )
+
+      return res.sendStatus(200)
+    }
+
+    // ================= PAYMENT COMPLETED =================
     if (event.event_type !== "PAYMENT.CAPTURE.COMPLETED") {
       return res.sendStatus(200)
     }
 
     const captureId = event.resource?.id
-    const userId = event.resource?.custom_id
 
-    if (!captureId || !userId) {
-      console.log("❌ Missing capture ID or user ID")
+    if (!captureId) {
+      console.log("❌ Missing capture ID")
       return res.sendStatus(200)
     }
 
@@ -278,7 +351,7 @@ app.post("/paypal-webhook", async (req, res) => {
       console.log("❌ Fake payment blocked")
 
       await notifyAdmin(
-        `❌ FAKE PAYMENT BLOCKED\n\nUser ID: ${userId}`
+        `❌ FAKE PAYMENT BLOCKED`
       )
 
       return res.sendStatus(200)
@@ -292,29 +365,39 @@ app.post("/paypal-webhook", async (req, res) => {
       console.log("❌ Wrong amount")
 
       await notifyAdmin(
-        `❌ WRONG PAYMENT AMOUNT\n\nUser ID: ${userId}`
+        `❌ WRONG PAYMENT AMOUNT`
       )
 
       return res.sendStatus(200)
     }
 
-    console.log("✅ VERIFIED PAYMENT:", userId)
+    const realUserId = verified.custom_id
+
+    if (!realUserId) {
+      console.log("❌ No user ID found")
+      return res.sendStatus(200)
+    }
+
+    console.log("✅ VERIFIED PAYMENT:", realUserId)
 
     await notifyAdmin(
-      `💰 PAYMENT RECEIVED\n\nUser ID: ${userId}\nAmount: €0.50`
+      `✅ PAYMENT RECEIVED\n\nUser ID: ${realUserId}\nAmount: €0.50`
     )
 
-    // CREATE INVITE LINK (5 MINUTES)
+    // CREATE INVITE LINK
     const invite = await bot.api.createChatInviteLink(
       CHANNEL_ID,
       {
         member_limit: 1,
-        expire_date: Math.floor(Date.now() / 1000) + 300
+        expire_date:
+          Math.floor(Date.now() / 1000) + 300
       }
     )
 
-    // 24 HOURS ACCESS
-    const expiry = new Date(Date.now() + 86400000)
+    // SAVE SUBSCRIPTION
+    const expiry = new Date(
+      Date.now() + 86400000
+    )
 
     await pool.query(
       `
@@ -323,18 +406,19 @@ app.post("/paypal-webhook", async (req, res) => {
       ON CONFLICT (telegram_id)
       DO UPDATE SET expiry = EXCLUDED.expiry
       `,
-      [userId, expiry]
+      [realUserId, expiry]
     )
 
+    // SEND INVITE
     await bot.api.sendMessage(
-      userId,
-      `✅ Payment confirmed!\n\n🎟 Your private access link:\n${invite.invite_link}\n\n⚠️ Link expires in 5 minutes.`
+      realUserId,
+      `✅ Payment confirmed!\n\n🎟 Private channel link:\n${invite.invite_link}\n\n⚠️ Link expires in 5 minutes.`
     )
 
-    console.log("🔗 LINK SENT:", userId)
+    console.log("🔗 LINK SENT:", realUserId)
 
     await notifyAdmin(
-      `🔗 INVITE LINK SENT\n\nUser ID: ${userId}`
+      `🔗 LINK SENT\n\nUser ID: ${realUserId}`
     )
 
     return res.sendStatus(200)
@@ -351,7 +435,9 @@ app.post("/paypal-webhook", async (req, res) => {
 
 // ================= SUCCESS PAGE =================
 app.get("/success", (req, res) => {
-  res.send("✅ Payment processed. Return to Telegram.")
+  res.send(
+    "✅ Payment processed. Return to Telegram."
+  )
 })
 
 // ================= CANCEL PAGE =================
@@ -365,7 +451,10 @@ app.post(`/${BOT_TOKEN}`, async (req, res) => {
     await bot.handleUpdate(req.body)
     res.sendStatus(200)
   } catch (err) {
-    console.error("Telegram webhook error:", err)
+    console.error(
+      "Telegram webhook error:",
+      err
+    )
     res.sendStatus(500)
   }
 })
@@ -394,24 +483,34 @@ setInterval(async () => {
           user.telegram_id
         )
 
-        console.log("🚫 Kicked:", user.telegram_id)
+        console.log(
+          "🚫 Kicked:",
+          user.telegram_id
+        )
 
         await notifyAdmin(
           `🚫 USER REMOVED\n\nUser ID: ${user.telegram_id}`
         )
       } catch (e) {
-        console.log("Kick error:", e.message)
+        console.log(
+          "Kick error:",
+          e.message
+        )
       }
     }
   } catch (err) {
-    console.error("Auto-kick error:", err)
+    console.error(
+      "Auto-kick error:",
+      err
+    )
   }
 }, 60000)
 
 // ================= PREVENT LINK SHARING =================
 bot.on("message:text", async (ctx) => {
   try {
-    const text = ctx.message.text.toLowerCase()
+    const text =
+      ctx.message.text.toLowerCase()
 
     if (
       text.includes("t.me/") ||
@@ -436,16 +535,22 @@ app.listen(PORT, async () => {
   console.log("🚀 Server running")
 
   try {
-    const webhookUrl = `https://${BASE_URL}/${BOT_TOKEN}`
+    const webhookUrl =
+      `https://${BASE_URL}/${BOT_TOKEN}`
 
     await bot.api.setWebhook(webhookUrl)
 
-    console.log(`✅ Webhook set: ${webhookUrl}`)
+    console.log(
+      `✅ Webhook set: ${webhookUrl}`
+    )
 
     await notifyAdmin(
       `🚀 BOT STARTED\n\nWebhook:\n${webhookUrl}`
     )
   } catch (err) {
-    console.log("⚠️ Webhook error:", err.message)
+    console.log(
+      "⚠️ Webhook error:",
+      err.message
+    )
   }
 })
