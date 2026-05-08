@@ -98,14 +98,19 @@ bot.command("start", async (ctx) => {
 bot.command("buy", async (ctx) => {
   try {
     const userId = ctx.from.id
-    const username = ctx.from.username || "no_username"
+
+    const username = ctx.from.username
+      ? `@${ctx.from.username}`
+      : "No username"
+
+    const firstName = ctx.from.first_name || "Unknown"
 
     const link = `https://${BASE_URL}/create-payment?userId=${userId}`
 
     console.log("💳 BUY CLICK:", userId)
 
     await notifyAdmin(
-      `💳 BUY CLICK\n\nUser ID: ${userId}\nUsername: @${username}`
+      `🛒 BUY CLICK\n\nUser ID: ${userId}\nName: ${firstName}\nUsername: ${username}`
     )
 
     await ctx.reply("💳 Subscribe now:", {
