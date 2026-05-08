@@ -60,7 +60,19 @@ bot.command("buy", async (ctx) => {
 
     const link = `https://${BASE_URL}/create-payment?userId=${userId}`
 
-    await ctx.reply(`💳 Click to pay:\n${link}`)
+    await ctx.reply("💳 Subscribe now:", {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "💎 Pay €0.50",
+              url: link
+            }
+          ]
+        ]
+      }
+    })
+
   } catch (err) {
     console.error(err)
     await ctx.reply("❌ Error generating payment link. Try again.")
@@ -163,6 +175,7 @@ app.get("/create-payment", async (req, res) => {
     }
 
     return res.redirect(approveLink.href)
+
   } catch (err) {
     console.error("Create payment error:", err)
     return res.status(500).send("Payment creation failed")
